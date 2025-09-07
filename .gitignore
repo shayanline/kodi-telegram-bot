@@ -1,0 +1,11 @@
+.env
+.DS_Store
+.idea/
+.vscode/
+.venv
+__pycache__/
+*.session
+*.session-journal
+.pytest_cache/
+.coverage
+*.log
