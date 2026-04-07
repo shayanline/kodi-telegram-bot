@@ -1,0 +1,23 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:best-practices",
+    "config:js-app",
+    ":automergeLinters",
+    ":automergeTesters",
+    ":automergeTypes",
+    ":automergeMinor",
+    ":automergeStableNonMajor",
+    ":combinePatchMinorReleases",
+    ":pinDevDependencies",
+    ":prConcurrentLimit10",
+    ":prHourlyLimitNone"
+  ],
+  "packageRules": [
+    {
+      "description": "Do not pin or update the Python version constraint",
+      "matchDepNames": ["python"],
+      "enabled": false
+    }
+  ]
+}
