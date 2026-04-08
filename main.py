@@ -87,7 +87,7 @@ def _cleanup_partials(active_snapshot):
 
     def _maybe_remove(path: str, expected: int) -> int:
         try:
-            if os.path.exists(path) and not validate_size(expected, path):
+            if os.path.exists(path) and (expected == 0 or not validate_size(expected, path)):
                 os.remove(path)
                 remove_empty_parents(path, [config.DOWNLOAD_DIR])
                 return 1

@@ -43,7 +43,8 @@ def _resolve(pid: str) -> str | None:
     if relpath is None:
         return None
     abspath = os.path.normpath(os.path.join(config.DOWNLOAD_DIR, relpath))
-    if not abspath.startswith(os.path.abspath(config.DOWNLOAD_DIR)):
+    base = os.path.abspath(config.DOWNLOAD_DIR)
+    if not (abspath == base or abspath.startswith(base + os.sep)):
         return None
     return abspath
 
@@ -146,10 +147,12 @@ def _render_root() -> tuple[str, list[list[Button]]]:
     for name in entries:
         pid = _path_id(name)
         full = os.path.join(config.DOWNLOAD_DIR, name)
-        label = f"📁 {name}" if os.path.isdir(full) else f"📄 {name}"
+        is_dir = os.path.isdir(full)
+        label = f"📁 {name}" if is_dir else f"📄 {name}"
         if len(label) > 32:
             label = label[:29] + "..."
-        row.append(Button.inline(label, data=f"f:n:{pid}:1"))
+        data = f"f:n:{pid}:1" if is_dir else f"f:i:{pid}"
+        row.append(Button.inline(label, data=data))
         if len(row) >= 3:
             buttons.append(row)
             row = []

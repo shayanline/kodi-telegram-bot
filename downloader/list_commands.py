@@ -125,12 +125,12 @@ async def _handle_info_callback(event):
     file_id = event.data.decode().split(":", 1)[1]
     filename = resolve_file_id(file_id)
     if not filename:
-        await event.answer("File not found", alert=False)
+        await event.answer("Download completed or no longer active", alert=False)
         return
 
     state = states.get(filename)
     if not state:
-        await event.answer("Download not active", alert=False)
+        await event.answer("Download completed or no longer active", alert=False)
         return
 
     await _create_info_message(event, filename, state)

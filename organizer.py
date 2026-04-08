@@ -358,7 +358,7 @@ def build_final_path(
     if parsed.category == "series" and parsed.normalized_stem:
         series_root = os.path.join(base_dir, config.SERIES_DIR_NAME)
         show_folder = parsed.title if not parsed.year else f"{parsed.title} ({parsed.year})"
-        season_folder = f"Season {parsed.season}" if parsed.season else "Season 1"
+        season_folder = f"Season {parsed.season}" if parsed.season is not None else "Season 1"
         final_dir = os.path.join(series_root, show_folder, season_folder)
         os.makedirs(final_dir, exist_ok=True)
         final_name = f"{parsed.normalized_stem}{ext}"

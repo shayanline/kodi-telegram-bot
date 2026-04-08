@@ -149,8 +149,6 @@ async def pre_checks(event: events.NewMessage.Event, text: str | None = None):
     file_size = document.size or 0
     path, final_name = build_final_path(filename, text=text)
     filename = final_name
-    if not await _ensure_disk_space(event, filename, file_size, path):
-        return None
     try:
         if utils.free_disk_mb(config.DOWNLOAD_DIR) < config.DISK_WARNING_MB:
             await event.respond(f"⚠️ Low disk space (< {config.DISK_WARNING_MB}MB free). Consider cleaning up soon.")
@@ -184,7 +182,7 @@ def _projected_free_mb(after_adding_bytes: int) -> int:
 
 
 def _current_reserved_bytes() -> int:
-    return sum(st.size for st in states.values())
+    return sum(max(0, st.size - st.downloaded_bytes) for st in states.values())
 
 
 def _list_files_under(root: str, exclude: set[str]) -> list[tuple[float, str]]:
@@ -437,6 +435,12 @@ async def run_download(
 
 
 def _init_state(filename: str, path: str, size: int, event: events.NewMessage.Event) -> DownloadState:
+    existing = states.get(filename)
+    if existing:
+        existing.path = path
+        existing.size = size
+        existing.original_event = event
+        return existing
     st = DownloadState(filename, path, size, original_event=event)
     states[filename] = st
     register_file_id(filename)
@@ -643,28 +647,40 @@ async def _handle_queued_duplicate(event, queued_item: QueuedItem, filename: str
         pass
 
 
-async def _enqueue_or_run(client: TelegramClient, document, filename, size, path, event):
-    if queue.is_saturated():
-        file_id = register_file_id(filename)
-        qi = QueuedItem(filename, document, size, path, event, file_id=file_id)
-        position = await queue.enqueue(qi)
-        try:
-            msg = await event.respond(
-                f"🕒 Queued #{position}: {filename}\nWaiting for free slot (limit {config.MAX_CONCURRENT_DOWNLOADS})",
-                buttons=[[Button.inline("🛑 Cancel", data=f"qcancel:{file_id}")]],
-                reply_to=getattr(event, "id", None),
-            )
-            qi.message = msg
-            sender = await event.get_sender()
-            user_id = getattr(sender, "id", None)
-            message_tracker.register_message(filename, msg, MessageType.QUEUED, user_id)
-        except Exception:
-            pass
-        return
-    async with queue.slot():  # pragma: no cover - thin wrapper
-        if not await _ensure_disk_space(event, filename, size, path):
-            return
-        await run_download(client, event, document, filename, size, path)
+async def _do_enqueue(client: TelegramClient, document, filename, size, path, event):
+    """Enqueue a download and send queue position message."""
+    file_id = register_file_id(filename)
+    qi = QueuedItem(filename, document, size, path, event, file_id=file_id)
+    position = await queue.enqueue(qi)
+    try:
+        msg = await event.respond(
+            f"🕒 Queued #{position}: {filename}\nWaiting for free slot (limit {config.MAX_CONCURRENT_DOWNLOADS})",
+            buttons=[[Button.inline("🛑 Cancel", data=f"qcancel:{file_id}")]],
+            reply_to=getattr(event, "id", None),
+        )
+        qi.message = msg
+        sender = await event.get_sender()
+        user_id = getattr(sender, "id", None)
+        message_tracker.register_message(filename, msg, MessageType.QUEUED, user_id)
+    except Exception:
+        pass
+
+
+async def _start_direct_download(client: TelegramClient, event, document, filename, size, path):
+    """Run a direct download. Called OUTSIDE _download_lock after pre-registering state."""
+    try:
+        async with queue.slot():
+            st = states.get(filename)
+            if st and st.cancelled:
+                _final_cleanup(filename)
+                return
+            if not await _ensure_disk_space(event, filename, size, path):
+                _final_cleanup(filename)
+                return
+            await run_download(client, event, document, filename, size, path)
+    except Exception:
+        if filename in states:
+            _final_cleanup(filename)
 
 
 def _register_download_handler(client: TelegramClient):
@@ -694,6 +710,8 @@ def _register_download_handler(client: TelegramClient):
 
         # Lock prevents race: two events for the same file could both pass the
         # duplicate check before either registers state, causing double downloads.
+        # Lock is held only during check+register, NOT during the actual download.
+        direct_download = None
         async with _download_lock:
             active_state = states.get(lookup_name)
             if active_state:
@@ -719,8 +737,19 @@ def _register_download_handler(client: TelegramClient):
             if not pre:
                 return
             document, filename, size, path = pre
-            await _enqueue_or_run(client, document, filename, size, path, event)
-            log.debug("Enqueued or started %s", filename)
+            if queue.is_saturated():
+                await _do_enqueue(client, document, filename, size, path, event)
+                log.debug("Enqueued %s", filename)
+                return
+            # Pre-register state so duplicates are detected after lock release
+            register_file_id(filename)
+            states[filename] = DownloadState(filename, path, size, original_event=event)
+            direct_download = (document, filename, size, path)
+
+        if direct_download:
+            document, filename, size, path = direct_download
+            await _start_direct_download(client, event, document, filename, size, path)
+            log.debug("Started %s", filename)
 
 
 def _register_status_handler(client: TelegramClient):
@@ -966,15 +995,27 @@ def _register_category_selection(client: TelegramClient):
                 await event.answer("Unknown", alert=False)
             return
         path, final_name = build_final_path(filename, forced_category=forced)
-        if states.get(final_name) or queue.items.get(final_name):
-            with contextlib.suppress(Exception):
-                await event.answer("Already queued", alert=False)
-            return
-        if not await _ensure_disk_space(orig_event, final_name, size, path):
-            return
-        await _enqueue_or_run(client, document, final_name, size, path, orig_event)
+        direct_download = None
+        async with _download_lock:
+            if states.get(final_name) or queue.items.get(final_name):
+                with contextlib.suppress(Exception):
+                    await event.answer("Already queued", alert=False)
+                return
+            if queue.is_saturated():
+                await _do_enqueue(client, document, final_name, size, path, orig_event)
+                with contextlib.suppress(Exception):
+                    await event.answer("Queued", alert=False)
+                return
+            # Pre-register state so duplicates are detected after lock release
+            register_file_id(final_name)
+            states[final_name] = DownloadState(final_name, path, size, original_event=orig_event)
+            direct_download = (document, final_name, size, path)
+
+        if direct_download:
+            document, final_name, size, path = direct_download
+            await _start_direct_download(client, orig_event, document, final_name, size, path)
         with contextlib.suppress(Exception):
-            await event.answer("Queued", alert=False)
+            await event.answer("Started", alert=False)
 
 
 __all__ = [
