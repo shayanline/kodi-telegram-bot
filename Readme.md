@@ -1,272 +1,211 @@
 <div align="center">
- 
+
 # Kodi Telegram Bot
 
-Lightweight Telegram bot that downloads video / audio you send it and plays the file on a Kodi instance. Built to be tiny, readable and Raspberry‑Pi friendly.
+A lightweight Telegram bot that downloads media you send it and plays the file on Kodi.
 
-<p>
-<em>No databases. No tracking. One process.</em>
-</p>
+Built to be tiny, readable, and Raspberry Pi friendly.
+
+*No databases. No tracking. One process.*
 
 </div>
 
 ## Table of Contents
 
-1. What It Does
-2. Features
-3. Architecture at a Glance
-4. Quick Start
-5. Environment Variables
-6. Usage & Controls
-7. Disk Space & Auto‑Clean
-8. Raspberry Pi Deployment (systemd)
-9. Contributing
-10. Troubleshooting
-11. License
+- [Features](#features)
+- [Prerequisites](#prerequisites)
+- [Quick Start](#quick-start)
+- [Configuration](#configuration)
+- [Usage](#usage)
+- [Architecture](#architecture)
+- [Disk Space and Auto Clean](#disk-space-and-auto-clean)
+- [Raspberry Pi Setup](#raspberry-pi-setup)
+- [Contributing](#contributing)
+- [Troubleshooting](#troubleshooting)
+- [License](#license)
 
-## 1. What It Does
+## Features
 
+<<<<<<< HEAD
 Send the bot a media file (video or audio). It:
 1. Validates it looks like playable media.
 2. Ensures post‑download free disk space stays above a safety threshold (auto‑clean oldest files if needed).
 3. Queues or starts download (with concurrency limit).
 4. Shows progress (Telegram + optional Kodi notifications).
 5. On completion, plays it on Kodi unless Kodi is already playing something (then just stores it).
+=======
+- Video and audio detection via MIME type, Telethon attributes, and extension fallback
+- Concurrency limit with a FIFO queue and per item cancellation
+- Inline buttons for pause, resume, and cancel during downloads
+- Automatic retry on transient network errors (configurable attempts)
+- Auto clean of oldest files when disk space is low
+- Smart media organization into Movies, Series, and Other folders
+- Category selection buttons when a file is ambiguous
+- Disk and memory safety checks with gentle warnings
+- Kodi progress notifications while idle (rate limited)
+- Minimal startup and error notifications with no log spam
+>>>>>>> 864abe7 (Rewrite README for clarity, structure, and readability)
 
-## 2. Features
+**Non goals:** partial resume of interrupted downloads, database persistence, and public group handling.
 
-- ✅ Video & audio detection via MIME, Telethon attributes & extension fallbacks
-- 🚦 Concurrency limit + FIFO queue with per‑item cancellation
-- ⏯ Inline buttons: Pause / Resume / Cancel
-- 🔁 Retry on transient timeouts (configurable attempts)
-- ♻️ Auto clean oldest files when space low (now recursive through organized subfolders)
-- 🗂 Automatic media organization (Movies / Series / Other) with smart filename normalization
-- 🎛 Category selection buttons for ambiguous uploads (choose Movie / Series / Other)
-- 🛡 Disk + memory safety checks with gentle warnings
-- 📊 Kodi progress notifications (rate‑limited) when idle
-- 🔔 Minimal startup & error notifications (no log spam)
-- 🧱 Small, modular codebase: easy to read & fork
+## Prerequisites
 
-Non‑goals: partial resume of interrupted downloads; database persistence; public group handling.
+You will need three things before running the bot.
 
-## 3. Architecture at a Glance
+### Python 3.11 or later
 
-```
-main.py            -> startup, graceful shutdown
-config.py          -> env loading & validation
-utils.py           -> media detection, disk/memory helpers
-kodi.py            -> tiny JSON‑RPC wrapper (notify / play / status)
-downloader/
-   queue.py         -> concurrency + FIFO queue worker
-   state.py         -> DownloadState (pause/resume/cancel flags)
-   buttons.py       -> inline keyboard builder
-   progress.py      -> rate‑limited progress callback factory
-   manager.py       -> orchestration: handlers, retries, success/error flows
-organizer.py       -> filename parsing, categorization & final path builder
-```
+Any system with Python 3.11+ will work. Tested on 3.12. A Raspberry Pi 3 or newer is a great fit.
 
-Everything is in‑memory; restart is safe (partially downloaded files <98% are re‑fetched).
+### Telegram API Credentials
 
-## 4. Quick Start
+1. Go to [my.telegram.org](https://my.telegram.org) and create an application. This gives you an **API ID** and **API Hash**.
+2. Open Telegram and start a chat with [@BotFather](https://t.me/BotFather).
+3. Send `/newbot` and follow the prompts to choose a name and username (must end in `bot`).
+4. BotFather will reply with an HTTP API token. This is your **Bot Token**.
+5. Keep the token secret. If it leaks, regenerate it with `/revoke`.
+
+### Kodi with HTTP Remote Control
+
+On your Kodi device, open **Settings > Services > Control** and enable:
+
+- "Allow remote control via HTTP"
+- "Allow remote control from applications on other systems"
+
+Optionally set a port (default 8080), username, and password. You will use these values in your `.env` file.
+
+## Quick Start
 
 ```bash
 git clone https://github.com/shemekhe/kodi-telegram-bot.git
 cd kodi-telegram-bot
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # fill in Telegram + Kodi values
+cp .env.example .env   # then edit .env with your values
 python main.py
 ```
 
-Send the bot a video or audio file in a private chat. Use `/status` anytime.
+Send the bot a video or audio file in a private chat. Use `/status` at any time to check progress.
 
-## 5. Environment Variables
+## Configuration
 
-Create a Telegram app (API ID / HASH) at https://my.telegram.org and a bot token via @BotFather.
+Copy `.env.example` to `.env` and fill in the values. The three Telegram variables are required. Everything else has sensible defaults.
 
-### 5.1 Required
-Set all three or the process exits on start:
-```
-TELEGRAM_API_ID=123456
-TELEGRAM_API_HASH=your_hash
-TELEGRAM_BOT_TOKEN=12345:bot_token
-```
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TELEGRAM_API_ID` | *(required)* | Numeric app ID from my.telegram.org |
+| `TELEGRAM_API_HASH` | *(required)* | App hash from my.telegram.org |
+| `TELEGRAM_BOT_TOKEN` | *(required)* | Token from @BotFather |
+| `KODI_URL` | `http://localhost:8080/jsonrpc` | Kodi JSON RPC endpoint |
+| `KODI_USERNAME` | `kodi` | Kodi HTTP username |
+| `KODI_PASSWORD` | *(blank)* | Kodi HTTP password |
+| `DOWNLOAD_DIR` | `~/Downloads` | Storage root, created if missing |
+| `ORGANIZE_MEDIA` | `1` | `1` to sort into Movies/Series/Other, `0` for flat storage |
+| `MAX_RETRY_ATTEMPTS` | `3` | Retry count per download on transient errors |
+| `MAX_CONCURRENT_DOWNLOADS` | `5` | Number of parallel download slots |
+| `MIN_FREE_DISK_MB` | `200` | Hard floor for free space after a download completes |
+| `DISK_WARNING_MB` | `500` | Soft warning threshold |
+| `MEMORY_WARNING_PERCENT` | `90` | Warn when memory usage exceeds this. Set to `0` to disable |
+| `ALLOWED_USERS` | *(blank)* | Comma or space separated list of user IDs and usernames. Blank means open to everyone |
+| `LOG_FILE` | `bot.log` | Log file path, truncated in place when it exceeds the size cap |
+| `LOG_LEVEL` | `INFO` | One of DEBUG, INFO, WARNING, or ERROR |
+| `LOG_MAX_MB` | `200` | Maximum log file size before truncation |
 
-### 5.2 Core (Kodi & Paths)
-```
-KODI_URL=http://localhost:8080/jsonrpc   # Adjust if Kodi uses different host/port
-KODI_USERNAME=kodi                       # Must match Kodi settings
-KODI_PASSWORD=your_pass                  # Blank allowed if Kodi has no auth
-DOWNLOAD_DIR=~/Downloads                 # Created if missing
-ORGANIZE_MEDIA=1                         # 1(default)=Movies/Series/Other tree; 0=flat
-```
-`ORGANIZE_MEDIA=0` stores files directly under `DOWNLOAD_DIR` using (sanitized) original filename.
+### Access Control
 
-### 5.3 Behavior & Performance
-```
-MAX_RETRY_ATTEMPTS=3        # Network-ish transient failures per item
-MAX_CONCURRENT_DOWNLOADS=5  # Active simultaneous downloads
-```
+`ALLOWED_USERS` accepts numeric Telegram IDs, usernames (with or without `@`), or a mix of both. Usernames are case insensitive. Prefer numeric IDs because usernames can change. When this variable is empty or unset, the bot accepts messages from anyone in private chat.
 
-### 5.4 Safety Thresholds
-```
-MIN_FREE_DISK_MB=200        # Hard gate: refuse (or auto-clean; then refuse if still low)
-DISK_WARNING_MB=500         # Soft warning only
-MEMORY_WARNING_PERCENT=90   # Show Kodi popup if exceeded; 0 disables
-```
-Disk auto-clean deletes oldest files recursively inside the media root until the projected free space after the pending download is >= `MIN_FREE_DISK_MB` or nothing left to delete.
+## Usage
 
-### 5.5 Access Control (Optional)
-```
-ALLOWED_USERS=12345678,@alice,bob
-```
-Comma OR space separated. Accepts numeric IDs and/or usernames (with or without `@`). Empty/unset = open to everyone (still private chats only). Usernames are case‑insensitive; prefer numeric IDs for permanence.
+Start the bot with `python main.py`. It only responds to private messages.
 
-### 5.6 Logging (Optional Overrides)
-```
-LOG_FILE=bot.log            # Path; single file truncated in-place
-LOG_LEVEL=INFO              # DEBUG / INFO / WARNING / ERROR
-LOG_MAX_MB=200              # Hard cap; file truncates before exceeding
-```
-Set none to accept defaults. Truncation writes a header line noting previous size & UTC timestamp.
+### Commands
 
-### 5.7 Quick Reference Table
+| Command | What it does |
+|---------|-------------|
+| `/start` | Shows help text |
+| `/status` | Lists active and queued downloads |
 
-| Name | Default | Notes |
-|------|---------|-------|
-| TELEGRAM_API_ID | (required) | Numeric app ID from my.telegram.org |
-| TELEGRAM_API_HASH | (required) | App hash from my.telegram.org |
-| TELEGRAM_BOT_TOKEN | (required) | Token from @BotFather |
-| KODI_URL | http://localhost:8080/jsonrpc | Kodi JSON-RPC endpoint |
-| KODI_USERNAME | kodi | Kodi HTTP username |
-| KODI_PASSWORD | (blank) | Kodi HTTP password (blank allowed) |
-| DOWNLOAD_DIR | ~/Downloads | Storage root (created if missing) |
-| ORGANIZE_MEDIA | 1 | 1 enable Movies/Series/Other; 0 flat layout |
-| MAX_RETRY_ATTEMPTS | 3 | Per download retry count (transient errors) |
-| MAX_CONCURRENT_DOWNLOADS | 5 | Parallel download slots |
-| MIN_FREE_DISK_MB | 200 | Hard free-space floor (after projected size) |
-| DISK_WARNING_MB | 500 | Soft warning threshold |
-| MEMORY_WARNING_PERCENT | 90 | 0 disables memory popup; otherwise warn >= value |
-| ALLOWED_USERS | (blank) | Comma/space IDs & usernames; blank=open |
-| LOG_FILE | bot.log | Truncating log file path |
-| LOG_LEVEL | INFO | Logging verbosity |
-| LOG_MAX_MB | 200 | Max size before in-place truncate |
+### Inline Controls
 
-Tip: copy `.env.example` to `.env` then edit; unused commented lines can stay.
+While a download is active, the bot shows inline buttons:
 
-## Creating Your Telegram Bot (Detail)
+- **Pause** temporarily halts the download and lets you resume from the same offset.
+- **Resume** continues a paused download.
+- **Cancel** aborts the download and deletes the partial file.
 
-1. Open Telegram and start a chat with **@BotFather**.
-2. Send `/newbot` and follow the prompts (choose a name + unique username ending in `bot`).
-3. BotFather returns an HTTP API token – set this as `TELEGRAM_BOT_TOKEN` in your `.env`.
-4. (Optional) Set a profile picture with `/setuserpic` and a description with `/setdescription`.
-5. Keep the token secret; regenerate with `/revoke` if leaked.
+Queued items also show a Cancel button.
 
-Environment variables needed from this step:
-```
-TELEGRAM_API_ID=your_api_id
-TELEGRAM_API_HASH=your_api_hash
-TELEGRAM_BOT_TOKEN=the_token_from_botfather
-```
-You can obtain API ID/HASH at https://my.telegram.org (create an application). These differ from the bot token.
+### Media Organization
 
-_Duplicate of feature bullets removed for brevity; see section 2._
-
-## Requirements
-
-- Python 3.10+ (tested on 3.12)  
-- Telegram API ID / Hash + bot token  
-- Kodi with JSON‑RPC (remote control via HTTP) enabled  
-- Works well on Raspberry Pi (3 or newer)
-
-## Kodi Configuration (Remote Control)
-
-Before running the bot, make sure Kodi allows remote control over HTTP:
-
-1. On your Kodi device open: Settings (gear icon) > Services > Control
-2. Enable: "Allow remote control via HTTP"
-3. (Optional but recommended) Set the port (default 8080), username, and password
-4. Also enable: "Allow remote control from applications on other systems"
-
-Match the chosen username/password/port with your `.env` values (`KODI_URL`, `KODI_USERNAME`, `KODI_PASSWORD`). Without this, the bot can’t send play or notification commands.
-
-## 6. Usage & Controls
-
-Run: `python main.py`
-
-Bot actions:
-1. Startup notification to Kodi (optional failure logged to stdout).
-2. Accepts only private messages with a document (video/audio). Others ignored unless `/start` or `/status`.
-3. If busy beyond concurrency limit -> place into queue with position number.
-
-Inline controls during active download:
-
-- ⏸ Pause – temporarily halts; can resume from same offset.
-- ▶ Resume – continues download.
-- 🛑 Cancel – aborts and deletes partial file.
-
-Commands:
-`/start` help text  
-`/status` active + queued summary  
-
-If the bot was offline for a long time you may need to resend older files.
-
-### Media Organization & Naming
-
-Enabled by default (`ORGANIZE_MEDIA=1`). Incoming filenames are parsed heuristically:
-
-1. Detect series tokens like `S02E06`, `SO4E24` (some releases use `O` instead of `0`).
-2. Detect a year token (e.g. `2024`) to classify as a Movie when no series token exists.
-3. Strip common quality / codec / group tags (e.g. `1080p`, `WEB-DL`, `x265`, `YTS`, `Farsi`, release group names).
-4. Normalize dots/underscores into spaces, capitalize words, and build final names.
-
-Resulting structure examples:
+Enabled by default (`ORGANIZE_MEDIA=1`). The bot parses incoming filenames and sorts them into folders:
 
 ```
 Movies/
-   Bullet Train (2022)/
-      Bullet Train (2022).mkv
+  Bullet Train (2022)/
+    Bullet Train (2022).mkv
 
 Series/
-   The Mentalist (2008)/
-      Season 4/
-         The Mentalist S04E24.mkv
+  The Mentalist (2008)/
+    Season 4/
+      The Mentalist S04E24.mkv
+
+Other/
+  SomeUnknownFile.mp4
 ```
 
-If classification is ambiguous (looks like a movie because it has a year but parser can’t be sure) you’ll get inline buttons:
-`🎬 Movie` · `📺 Series` · `📁 Other`
+The parser detects season/episode tokens like `S02E06`, year tokens like `(2024)`, and strips common quality and codec tags (1080p, WEB DL, x265, etc.). If the classification is ambiguous, the bot shows inline buttons so you can choose Movie, Series, or Other without uploading again.
 
-Selecting one forces the directory choice without re‑uploading.
+Set `ORGANIZE_MEDIA=0` to store all files flat under `DOWNLOAD_DIR`.
 
-Other / unknown files (no year & no season/episode pattern) go under:
-```
-Other/<OriginalFileName.ext>
-```
+### Concurrency and Queue
 
-Disable the whole feature with `ORGANIZE_MEDIA=0` to revert to flat storage.
-
-### Concurrency & Queue
-Active downloads <= `MAX_CONCURRENT_DOWNLOADS`; extra items wait. The `/status` output lists active first, then queued. Queued items expose a Cancel button (labelled "Cancelled (queued)" when removed).
+The bot downloads up to `MAX_CONCURRENT_DOWNLOADS` files at once. Any additional files are placed in a FIFO queue. Use `/status` to see what is active and what is waiting.
 
 ### Restart Behavior
-On restart any partial files <98% complete are deleted & re‑downloaded when resent. Completed files can be re‑played by sending them again (Kodi will just play existing file if unchanged).
 
-## 7. Disk Space & Auto‑Clean
+On restart, partially downloaded files (under 98% complete) are cleaned up. Resend the file to download it again. Completed files are kept as they are; the bot will simply play the existing copy on Kodi.
 
-Each download is allowed only if predicted free space after completion stays above `MIN_FREE_DISK_MB`.
-If not, the bot automatically deletes the oldest files (recursive across Movies/Series/Other) until the requirement is met. If still not enough, the download is refused. A soft warning is shown when free space drops below `DISK_WARNING_MB`.
+## Architecture
 
-## 8. Raspberry Pi Setup
+```
+main.py              startup, graceful shutdown
+config.py            env loading and validation
+utils.py             media detection, disk/memory helpers
+kodi.py              thin JSON RPC wrapper (notify, play, status)
+organizer.py         filename parsing, categorization, final path builder
+logger.py            truncating file logger with size cap
+downloader/
+  queue.py           concurrency and FIFO queue worker
+  state.py           download state, message tracking
+  buttons.py         inline keyboard builder
+  progress.py        rate limited progress callback factory
+  manager.py         orchestration: handlers, retries, success/error flows
+  ids.py             stable short file identifiers for callback data
+  list_commands.py   /downloads and /queue command handlers
+tests/               pytest test suite
+```
 
-Optimized for Raspberry Pi (Pi 3 or later recommended). Below is a concise, production-friendly setup.
+Everything runs in memory. A restart is always safe.
 
-### 1. OS & Packages
+## Disk Space and Auto Clean
+
+Before starting a download, the bot checks whether the projected free space after completion will stay above `MIN_FREE_DISK_MB`. If not, it automatically deletes the oldest files (recursively across Movies, Series, and Other) until the requirement is met. If there is still not enough space, the download is refused.
+
+A soft warning is shown when free space drops below `DISK_WARNING_MB`.
+
+## Raspberry Pi Setup
+
+The bot is optimized for Raspberry Pi 3 or later. This section walks through a production friendly setup.
+
+### Install Dependencies
+
 ```sh
 sudo apt update
 sudo apt install -y python3 python3-venv git
 ```
 
-### 2. Clone & Install
+### Clone and Install
+
 ```sh
 cd /home/pi
 git clone https://github.com/shemekhe/kodi-telegram-bot.git
@@ -278,15 +217,10 @@ pip install -r requirements.txt
 cp .env.example .env  # then edit .env with your values
 ```
 
-Edit `.env` and set your Telegram + Kodi values. Ensure `DOWNLOAD_DIR` exists or let the app create it.
+### Create a systemd Service
 
-### 3. systemd Service
-Create the service file:
-```sh
-sudo nano /etc/systemd/system/kodi-telegram-bot.service
-```
+Create the service file at `/etc/systemd/system/kodi-telegram-bot.service`:
 
-Paste (adjust paths if you used a different location):
 ```ini
 [Unit]
 Description=Kodi Telegram Bot
@@ -302,8 +236,6 @@ EnvironmentFile=/home/pi/kodi-telegram-bot/.env
 ExecStart=/home/pi/kodi-telegram-bot/.venv/bin/python main.py
 Restart=on-failure
 RestartSec=5
-
-# (Optional hardening — relax if it causes issues)
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
@@ -313,21 +245,24 @@ ProtectHome=false
 WantedBy=multi-user.target
 ```
 
-Enable & start:
+Then enable and start it:
+
 ```sh
 sudo systemctl daemon-reload
 sudo systemctl enable kodi-telegram-bot
 sudo systemctl start kodi-telegram-bot
 ```
 
-### 4. Logs & Maintenance
+### Logs and Maintenance
+
 ```sh
 journalctl -u kodi-telegram-bot -f    # live logs
 sudo systemctl restart kodi-telegram-bot
 sudo systemctl status kodi-telegram-bot
 ```
 
-Update to latest version:
+To update to the latest version:
+
 ```sh
 cd /home/pi/kodi-telegram-bot
 git pull
@@ -336,48 +271,44 @@ pip install -r requirements.txt
 sudo systemctl restart kodi-telegram-bot
 ```
 
-### 5. File Storage Considerations
-- Use an external drive for large media: set `DOWNLOAD_DIR` to the mounted path (e.g. `/mnt/media`).
-- Ensure the `pi` user has write permissions on that path.
-- Monitor space: `df -h`.
+### Storage Tips
 
-### 6. Optional Optimization
-- Add swap if memory constrained (but SSD wear risk).
-- Use `ionice` / `nice` wrappers if downloads compete with playback (advanced).
+For large media collections, point `DOWNLOAD_DIR` to an external drive (for example `/mnt/media`). Make sure the `pi` user has write permissions on that path. Monitor available space with `df -h`.
 
-You now have an auto‑starting bot instance.
+## Contributing
 
-## 9. Contributing
+Pull requests and small improvements are welcome.
 
-PRs and small improvements welcome. Suggested first issues:
+**Good first issues:**
+
 - Add tests for a missing edge case (see `tests/` for style)
-- Improve docs / examples
-- Add optional logging verbosity flag
+- Improve docs or examples
 
-Guidelines:
-1. Keep functions small & side‑effect light.
+**Guidelines:**
+
+1. Keep functions small and focused.
 2. Avoid adding heavy dependencies.
 3. Run `pytest -q` before submitting.
 4. Prefer clarity over cleverness.
 
-No formal Code of Conduct yet; be respectful.
+## Troubleshooting
 
-## 10. Troubleshooting
+| Issue | Things to check |
+|-------|----------------|
+| Kodi not playing | Is JSON RPC enabled? Are the URL, username, and password correct? Is the port reachable? |
+| Bot is silent | Is it a private chat? Did you send an actual file, not a streaming link? |
+| Stuck in queue | The concurrency limit has been reached. Wait for a slot or raise the limit. |
+| Always low on space | Increase `MIN_FREE_DISK_MB` or clean the download directory manually. |
+| Memory warnings | Set `MEMORY_WARNING_PERCENT=0` to disable memory alerts. |
 
-Issue | Things to Check
------ | ----------------
-Kodi not playing | JSON‑RPC enabled? Correct URL / credentials? Port reachable?
-Bot silent | Is it a private chat? Did you send a *file* (not a streaming link)?
-Stuck queued | Concurrency limit reached; lower file count or raise limit.
-Always low space | Increase `MIN_FREE_DISK_MB` cautiously or clean directory.
-Memory warnings | Set `MEMORY_WARNING_PERCENT=0` to disable.
+## License
 
-Logging is intentionally minimal; feel free to add temporary prints while debugging.
-
-## 11. License
-
-MIT — do what you like; attribution appreciated. No warranty.
+MIT. Do what you like; attribution appreciated. No warranty.
 
 ---
 
+<<<<<<< HEAD
 Happy hacking. If this helped you, a ⭐ on the repo helps others find it.
+=======
+If this project helped you, a star on the repo helps others find it.
+>>>>>>> 864abe7 (Rewrite README for clarity, structure, and readability)
