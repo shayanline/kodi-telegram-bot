@@ -98,7 +98,7 @@ Copy `.env.example` to `.env` and fill in the values. The three Telegram variabl
 | `MAX_CONCURRENT_DOWNLOADS` | `5` | Number of parallel download slots |
 | `MIN_FREE_DISK_MB` | `200` | Hard floor for free space after a download completes |
 | `DISK_WARNING_MB` | `500` | Soft warning threshold |
-| `MEMORY_WARNING_PERCENT` | `90` | Warn when memory usage exceeds this. Set to `0` to disable |
+| `MEMORY_WARNING_PERCENT` | `90` | Send a Kodi notification when RAM usage exceeds this during downloads. Set to `0` to disable |
 | `ALLOWED_USERS` | *(blank)* | Comma or space separated list of user IDs and usernames. Blank means open to everyone |
 | `LOG_FILE` | `bot.log` | Log file path, truncated in place when it exceeds the size cap |
 | `LOG_LEVEL` | `INFO` | One of DEBUG, INFO, WARNING, or ERROR |
@@ -324,7 +324,7 @@ Pull requests and small improvements are welcome.
 | Bot is silent | Is it a private chat? Did you send an actual file, not a streaming link? |
 | Stuck in queue | The concurrency limit has been reached. Wait for a slot or raise the limit. |
 | Always low on space | Increase `MIN_FREE_DISK_MB` or clean the download directory manually. |
-| Memory warnings | Set `MEMORY_WARNING_PERCENT=0` to disable memory alerts. |
+| Memory warnings | Set `MEMORY_WARNING_PERCENT=0` to disable Kodi memory notifications during downloads. |
 
 ## License
 

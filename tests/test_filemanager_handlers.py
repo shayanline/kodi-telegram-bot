@@ -15,7 +15,6 @@ from unittest.mock import patch
 import config
 import filemanager
 import throttle
-import utils
 
 # ── Helpers ──
 
@@ -101,8 +100,6 @@ def _setup(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "DOWNLOAD_DIR", str(tmp_path))
     monkeypatch.setattr(config, "ALLOWED_USER_IDS", set())
     monkeypatch.setattr(config, "ALLOWED_USERNAMES", set())
-    monkeypatch.setattr(config, "MEMORY_WARNING_PERCENT", 0)
-    monkeypatch.setattr(utils, "memory_warning_message", lambda pct: None)
 
     client = FakeClient()
     filemanager.register_filemanager(client)
@@ -246,16 +243,6 @@ def test_files_command_unauthorized(monkeypatch, tmp_path):
     event = FakeEvent(user_id=1, username="hacker")
     asyncio.run(handlers["_files"](event))
     assert "Not authorized" in event._responded
-
-
-def test_files_command_memory_warning(monkeypatch, tmp_path):
-    """Memory warning is sent before the file manager view."""
-    handlers = _setup(monkeypatch, tmp_path)
-    monkeypatch.setattr(utils, "memory_warning_message", lambda pct: "⚠️ Low memory")
-    event = FakeEvent()
-    asyncio.run(handlers["_files"](event))
-    assert any("Low memory" in r for r in event._all_responds)
-    assert any("File Manager" in r for r in event._all_responds)
 
 
 # ── _root callback (lines 416-423) ──

@@ -404,7 +404,11 @@ async def run_download(
             except Exception:
                 pass
 
-    # Monkey-patch msg.edit to fan out updates to mirror messages with fallback
+    # Monkey-patch msg.edit to fan out updates to mirror messages with fallback.
+    #
+    # IMPORTANT: _patched_edit runs inside _tg_call (which holds _tg_lock).
+    # All API calls here MUST bypass throttle.* to avoid deadlocking on the
+    # non-reentrant _tg_lock.
     _orig_edit = msg.edit
 
     async def _patched_edit(text: str, **kwargs):  # pragma: no cover simple wrapper
@@ -414,8 +418,11 @@ async def run_download(
             r = await _orig_edit(text, **kwargs)
         except Exception as exc:
             if type(exc).__name__ != "MessageNotModifiedError":
-                # Primary message uneditable — send a replacement
-                new_msg = await throttle.send_message(msg, text, **kwargs)
+                # Primary message uneditable — send a replacement (direct API)
+                try:
+                    new_msg = await msg.respond(text, **kwargs)
+                except Exception:
+                    new_msg = None
                 if new_msg:
                     state.message = new_msg
                     _orig_edit = new_msg.edit
@@ -423,12 +430,16 @@ async def run_download(
         for tracked in message_tracker.get_messages(state.filename, MessageType.PROGRESS):
             if state.message and tracked.message.id == state.message.id:
                 continue
-            result = await throttle.edit_message(tracked.message, text, **kwargs)
-            if result is None:
-                # Mirror message uneditable — send a replacement in the same chat
-                new_mirror = await throttle.send_message(tracked.message, text, **kwargs)
-                if new_mirror:
-                    tracked.message = new_mirror
+            try:
+                await tracked.message.edit(text, **kwargs)
+            except Exception as exc:
+                if type(exc).__name__ != "MessageNotModifiedError":
+                    try:
+                        new_mirror = await tracked.message.respond(text, **kwargs)
+                        if new_mirror:
+                            tracked.message = new_mirror
+                    except Exception:
+                        pass
         return r
 
     with contextlib.suppress(Exception):
@@ -841,9 +852,6 @@ def _register_start_handler(client: TelegramClient):
         if not config.is_user_allowed(getattr(sender, "id", None), getattr(sender, "username", None)):
             await throttle.send_message(event, "🛑 Not authorized.")
             return
-        warning = utils.memory_warning_message(config.MEMORY_WARNING_PERCENT)
-        if warning:
-            await throttle.send_message(event, warning)
         await throttle.send_message(event, HELP_TEXT)
 
 

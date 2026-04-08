@@ -707,7 +707,6 @@ def test_start_handler(monkeypatch):
     from downloader import manager
 
     monkeypatch.setattr(config, "is_user_allowed", lambda uid, uname: True)
-    monkeypatch.setattr(config, "MEMORY_WARNING_PERCENT", 0)
 
     client = FakeClient()
     manager._register_start_handler(client)

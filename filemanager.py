@@ -405,9 +405,6 @@ def _register_files_command(client: TelegramClient) -> None:
         if not config.is_user_allowed(getattr(sender, "id", None), getattr(sender, "username", None)):
             await throttle.send_message(event, "🛑 Not authorized.")
             return
-        warning = utils.memory_warning_message(config.MEMORY_WARNING_PERCENT)
-        if warning:
-            await throttle.send_message(event, warning)
         text, buttons = _render_root()
         await throttle.send_message(event, text, buttons=buttons, parse_mode="md")
 

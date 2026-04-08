@@ -97,24 +97,10 @@ def maybe_memory_warning(threshold_percent: int) -> bool:
     return False
 
 
-def memory_warning_message(threshold_percent: int) -> str | None:
-    """Return warning text if RAM usage is above threshold, else None."""
-    if threshold_percent <= 0:
-        return None
-    try:
-        percent = int(psutil.virtual_memory().percent)
-    except Exception:
-        return None
-    if percent >= threshold_percent:
-        return f"⚠️ High memory usage: {percent}% (threshold: {threshold_percent}%)"
-    return None
-
-
 __all__ = [
     "free_disk_mb",
     "humanize_size",
     "is_media_file",
     "maybe_memory_warning",
-    "memory_warning_message",
     "remove_empty_parents",
 ]

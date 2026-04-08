@@ -7,7 +7,6 @@ import asyncio
 import config
 import downloader.list_commands as lc
 import throttle
-import utils
 from downloader.list_commands import (
     build_downloads_list,
     build_queue_list,
@@ -74,14 +73,12 @@ class FakeQueue:
 # ── Setup helper ──
 
 
-def _setup(monkeypatch, *, allowed=True, warning=None):
+def _setup(monkeypatch, *, allowed=True):
     """Patch throttle/config/utils; return (sent, edited, answered, tracker)."""
     sent, edited, answered = [], [], []
     tracker = MessageTracker()
 
     monkeypatch.setattr(config, "is_user_allowed", lambda uid, uname: allowed)
-    monkeypatch.setattr(config, "MEMORY_WARNING_PERCENT", 90)
-    monkeypatch.setattr(utils, "memory_warning_message", lambda thresh: warning)
 
     msg = FakeMsg()
 
@@ -145,16 +142,6 @@ def test_downloads_empty_no_warning(monkeypatch):
     assert len(tracker.get_messages("__downloads_list__")) == 1
 
 
-def test_downloads_with_memory_warning(monkeypatch):
-    sent, _, _, _ = _setup(monkeypatch, warning="High memory!")
-    monkeypatch.setattr(lc, "states", {})
-    h = _handlers()
-    asyncio.run(h[0](FakeEvent()))
-    texts = [s["text"] for s in sent]
-    assert any("High memory" in t for t in texts)
-    assert any("No active downloads" in t for t in texts)
-
-
 def test_downloads_with_active_states(monkeypatch):
     sent, _, _, tracker = _setup(monkeypatch)
     st = DownloadState("dl.mp4", "/tmp/dl.mp4", 1000)
@@ -186,15 +173,6 @@ def test_queue_list_empty(monkeypatch):
     asyncio.run(h[1](FakeEvent()))
     assert any("No queued downloads" in s["text"] for s in sent)
     assert len(tracker.get_messages("__queue_list__")) == 1
-
-
-def test_queue_list_with_memory_warning(monkeypatch):
-    sent, _, _, _ = _setup(monkeypatch, warning="High memory!")
-    monkeypatch.setattr(lc, "queue", FakeQueue())
-    h = _handlers()
-    asyncio.run(h[1](FakeEvent()))
-    texts = [s["text"] for s in sent]
-    assert any("High memory" in t for t in texts)
 
 
 def test_queue_list_with_items(monkeypatch):
