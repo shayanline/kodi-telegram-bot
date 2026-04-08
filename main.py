@@ -20,6 +20,26 @@ from logger import log
 from utils import remove_empty_parents
 
 
+async def _register_bot_commands(client: TelegramClient) -> None:
+    """Push the command list to Telegram so clients show autocomplete."""
+    try:
+        from telethon.tl.functions.bots import SetBotCommandsRequest
+        from telethon.tl.types import BotCommand, BotCommandScopeDefault
+    except Exception:
+        return
+    commands = [
+        BotCommand("start", "Help / usage"),
+        BotCommand("status", "Show downloads summary"),
+        BotCommand("downloads", "Show active downloads"),
+        BotCommand("queue", "Show queued downloads"),
+        BotCommand("files", "Browse and manage files"),
+        BotCommand("kodi", "Kodi remote control"),
+        BotCommand("restart_kodi", "Quit and restart Kodi"),
+    ]
+    with contextlib.suppress(Exception):
+        await client(SetBotCommandsRequest(scope=BotCommandScopeDefault(), lang_code="", commands=commands))
+
+
 async def startup_message() -> None:
     try:
         await kodi.notify("Telegram Bot", "Ready for private media uploads")
@@ -54,6 +74,7 @@ async def _setup_client():
     register_kodi_remote(client)
     register_kodi_restart(client)
     await client.start(bot_token=config.BOT_TOKEN)
+    await _register_bot_commands(client)
     try:  # Explicit catch-up so we know backlog is processed before announcing ready.
         await client.catch_up()
         log.debug("Initial catch_up completed")

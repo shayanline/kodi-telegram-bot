@@ -536,7 +536,6 @@ def register_handlers(client: TelegramClient):
     _register_start_handler(client)
     _register_control_callbacks(client)
     register_list_handlers(client)
-    client.loop.create_task(_register_bot_commands(client))
 
 
 def _same_user(ev1, ev2):
@@ -784,25 +783,6 @@ def _register_start_handler(client: TelegramClient):
         if warning:
             await throttle.send_message(event, warning)
         await throttle.send_message(event, HELP_TEXT)
-
-
-async def _register_bot_commands(client: TelegramClient):
-    try:
-        from telethon.tl.functions.bots import SetBotCommandsRequest
-        from telethon.tl.types import BotCommand, BotCommandScopeDefault
-    except Exception:
-        return
-    commands = [
-        BotCommand("start", "Help / usage"),
-        BotCommand("status", "Show downloads summary"),
-        BotCommand("downloads", "Show active downloads"),
-        BotCommand("queue", "Show queued downloads"),
-        BotCommand("files", "Browse and manage files"),
-        BotCommand("kodi", "Kodi remote control"),
-        BotCommand("restart_kodi", "Quit and restart Kodi"),
-    ]
-    with contextlib.suppress(Exception):
-        await client(SetBotCommandsRequest(scope=BotCommandScopeDefault(), lang_code="", commands=commands))
 
 
 def _register_control_callbacks(client: TelegramClient):
