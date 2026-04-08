@@ -22,10 +22,10 @@ from utils import remove_empty_parents
 from .buttons import build_buttons
 from .ids import get_file_id
 from .list_commands import (
-    _build_downloads_list,
-    _build_queue_list,
-    _get_status_text,
-    _handle_existing_lists_for_new_download,
+    build_downloads_list,
+    build_queue_list,
+    get_status_text,
+    handle_existing_lists_for_new_download,
     register_list_handlers,
 )
 from .progress import RateLimiter, create_progress_callback, wait_if_paused
@@ -99,20 +99,20 @@ async def _update_tracked_messages(filename: str, state: DownloadState):
                 # Skip the primary message (already updated by caller)
                 if state.message and tracked.message.id == state.message.id:
                     continue
-                status = _get_status_text(state)
+                status = get_status_text(state)
                 text = f"{status}: {state.filename}"
                 buttons = build_buttons(state)
                 new_msg = await _safe_edit(tracked.message, text, buttons=buttons)
                 if new_msg and new_msg is not tracked.message:
                     tracked.message = new_msg
             elif tracked.message_type == MessageType.DOWNLOAD_LIST:
-                text, buttons = _build_downloads_list(states)
+                text, buttons = build_downloads_list(states)
                 new_msg = await _safe_edit(tracked.message, text, buttons=buttons)
                 if new_msg and new_msg is not tracked.message:
                     tracked.message = new_msg
             elif tracked.message_type == MessageType.QUEUE_LIST:
                 if queue.items:
-                    text, buttons = _build_queue_list(queue.items)
+                    text, buttons = build_queue_list(queue.items)
                 else:
                     text = "📝 No queued downloads"
                     buttons = [[Button.inline("🔄 Refresh", data="refresh_queue")]]
@@ -141,14 +141,9 @@ def validate_size(expected_size: int, path: str) -> bool:
 
 async def pre_checks(event: events.NewMessage.Event, text: str | None = None):
     document = event.document
-    if not utils.is_media_file(document):
-        await event.respond("⚠️ Only video and audio files are supported")
-        return None
     original_filename = filename_for_document(document)
-    filename = original_filename
     file_size = document.size or 0
-    path, final_name = build_final_path(filename, text=text)
-    filename = final_name
+    path, filename = build_final_path(original_filename, text=text)
     try:
         if utils.free_disk_mb(config.DOWNLOAD_DIR) < config.DISK_WARNING_MB:
             await event.respond(f"⚠️ Low disk space (< {config.DISK_WARNING_MB}MB free). Consider cleaning up soon.")
@@ -361,7 +356,7 @@ async def run_download(
     state = _init_state(filename, path, file_size, event)
     if existing_message is not None:
         state.message = existing_message
-        _handle_existing_lists_for_new_download(filename)
+        handle_existing_lists_for_new_download(filename)
         msg = existing_message
     else:
         msg = await _send_start_message(event, state)
@@ -928,7 +923,7 @@ def _register_qcancel(client: TelegramClient):
             if tracked.message_type == MessageType.QUEUE_LIST:
                 try:
                     if queue.items:
-                        text, buttons = _build_queue_list(queue.items)
+                        text, buttons = build_queue_list(queue.items)
                         await tracked.message.edit(text, buttons=buttons)
                     else:
                         await tracked.message.edit(
@@ -939,8 +934,7 @@ def _register_qcancel(client: TelegramClient):
                     pass
 
         message_tracker.cleanup_file(filename)
-        with contextlib.suppress(Exception):
-            file_id_map.pop(file_id, None)
+        file_id_map.pop(file_id, None)
         with contextlib.suppress(Exception):
             await event.answer("Cancelled")
 

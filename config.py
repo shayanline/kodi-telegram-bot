@@ -44,10 +44,7 @@ def _parse_allowed(raw: str) -> tuple[set[int], set[str]]:
         if not token:
             continue
         if token.isdigit():
-            try:
-                ids.add(int(token))
-            except ValueError:  # pragma: no cover - defensive
-                continue
+            ids.add(int(token))
         else:
             names.add(token.lower())
     return ids, names
@@ -57,7 +54,6 @@ ALLOWED_USER_IDS, ALLOWED_USERNAMES = _parse_allowed(_RAW_ALLOWED_USERS)
 
 KODI_URL: str = os.getenv("KODI_URL", "http://localhost:8080/jsonrpc")
 KODI_AUTH = (os.getenv("KODI_USERNAME", "kodi"), os.getenv("KODI_PASSWORD", ""))
-HEADERS = {"Content-Type": "application/json"}
 
 _RAW_DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR", "~/Downloads")
 DOWNLOAD_DIR = os.path.expanduser(os.path.expandvars(_RAW_DOWNLOAD_DIR))
@@ -104,7 +100,6 @@ __all__ = [
     "BOT_TOKEN",
     "DISK_WARNING_MB",
     "DOWNLOAD_DIR",
-    "HEADERS",
     "KODI_AUTH",
     "KODI_URL",
     "MAX_CONCURRENT_DOWNLOADS",

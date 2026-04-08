@@ -323,12 +323,6 @@ def _do_delete(abspath: str) -> bool:
         return False
 
 
-def _parent_data(relpath: str) -> str:
-    """Return callback data to navigate to the parent of relpath."""
-    parent = os.path.dirname(relpath)
-    return f"f:n:{_path_id(parent)}:1" if parent else "f:r"
-
-
 async def _safe_edit(event, text: str, buttons) -> None:
     """Edit a callback query message, suppressing no-change errors."""
     with contextlib.suppress(MessageNotModifiedError):

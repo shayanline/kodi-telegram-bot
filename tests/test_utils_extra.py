@@ -2,7 +2,7 @@ import utils
 
 
 def test_humanize_size_basic():
-    assert utils.humanize_size(0) == "0B"
+    assert utils.humanize_size(0) == "0 B"
     assert utils.humanize_size(1024) == "1.0 KB"
 
 

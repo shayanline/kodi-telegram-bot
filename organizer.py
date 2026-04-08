@@ -91,6 +91,8 @@ _JUNK = {
     "ac3",
     "mp3",
     "flac",
+    "dd7",
+    "ddp7",
     "6ch",
     "8ch",
     # Release / language / misc tags
@@ -129,7 +131,7 @@ _JUNK = {
 }
 
 # Edition tokens stripped from titles (not useful for path building)
-_EDITION_KEEP = {"extended", "remastered", "unrated", "imax", "directors", "director", "ultimate"}
+_EDITION_TAGS = {"extended", "remastered", "unrated", "imax", "directors", "director", "ultimate"}
 
 
 @dataclass(slots=True)
@@ -172,8 +174,6 @@ def _clean_tokens(tokens: Iterable[str]) -> list[str]:
 
 
 def _norm_word(w: str) -> str:
-    if not w:
-        return w
     # Preserve short all-caps tokens as potential acronyms (FBI, NCIS, HBO)
     if w.isupper() and len(w) <= 4:
         return w
@@ -234,7 +234,7 @@ def _detect_series(tokens: list[str]) -> tuple[int | None, int | None, int, str 
 
 def _strip_edition_tokens(tokens: list[str]) -> list[str]:
     """Remove edition keywords (Extended, Remastered, …) from token list."""
-    return [t for t in tokens if t.lower() not in _EDITION_KEEP]
+    return [t for t in tokens if t.lower() not in _EDITION_TAGS]
 
 
 _MOVIE_LINE_RE = re.compile(r"^🎬\s+(.+?)\s*\((\d{4})\)\s*$")
@@ -340,7 +340,7 @@ def build_final_path(
         # Synthesize minimal normalized stem if missing for movie/series
         if forced_category == "movie" and not parsed.normalized_stem:
             base_title = parsed.title or os.path.splitext(filename)[0]
-            parsed.normalized_stem = f"{base_title}"
+            parsed.normalized_stem = base_title
         if forced_category == "series" and not parsed.normalized_stem:
             base_title = parsed.title or os.path.splitext(filename)[0]
             parsed.normalized_stem = f"{base_title} S01E01"
@@ -350,7 +350,7 @@ def build_final_path(
 
     if parsed.category == "movie" and parsed.normalized_stem:
         movies_root = os.path.join(base_dir, config.MOVIES_DIR_NAME)
-        folder = f"{parsed.normalized_stem}"  # stem already '(Year)'
+        folder = parsed.normalized_stem  # stem already includes '(Year)'
         final_dir = os.path.join(movies_root, folder)
         os.makedirs(final_dir, exist_ok=True)
         final_name = f"{parsed.normalized_stem}{ext}"

@@ -18,7 +18,7 @@ from telethon.tl.types import (
 def humanize_size(size_bytes: float) -> str:
     """Return human readable size (KB..TB)."""
     if size_bytes <= 0:
-        return "0B"
+        return "0 B"
     names = ("B", "KB", "MB", "GB", "TB")
     i = int(math.log(size_bytes, 1024))
     if i >= len(names):

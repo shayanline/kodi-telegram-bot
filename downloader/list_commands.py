@@ -20,6 +20,7 @@ def register_list_handlers(client: TelegramClient):
     _register_downloads_handler(client)
     _register_queue_handler(client)
     _register_list_callbacks(client)
+    _register_noop_handler(client)
 
 
 def _register_downloads_handler(client: TelegramClient):
@@ -42,7 +43,7 @@ def _register_downloads_handler(client: TelegramClient):
             buttons = [[Button.inline("🔄 Refresh", data="refresh_downloads")]]
             msg = await event.respond(text, buttons=buttons)
         else:
-            text, buttons = _build_downloads_list(states)
+            text, buttons = build_downloads_list(states)
             msg = await event.respond(text, buttons=buttons)
 
         message_tracker.register_message("__downloads_list__", msg, MessageType.DOWNLOAD_LIST, user_id)
@@ -71,7 +72,7 @@ def _register_queue_handler(client: TelegramClient):
             buttons = [[Button.inline("🔄 Refresh", data="refresh_queue")]]
             msg = await event.respond(text, buttons=buttons)
         else:
-            text, buttons = _build_queue_list(queue.items)
+            text, buttons = build_queue_list(queue.items)
             msg = await event.respond(text, buttons=buttons)
 
         message_tracker.register_message("__queue_list__", msg, MessageType.QUEUE_LIST, user_id)
@@ -89,7 +90,7 @@ def _register_list_callbacks(client: TelegramClient):
                 buttons = [[Button.inline("🔄 Refresh", data="refresh_downloads")]]
                 await event.edit(text, buttons=buttons)
             else:
-                text, buttons = _build_downloads_list(states)
+                text, buttons = build_downloads_list(states)
                 await event.edit(text, buttons=buttons)
         except MessageNotModifiedError:
             pass
@@ -106,7 +107,7 @@ def _register_list_callbacks(client: TelegramClient):
                 buttons = [[Button.inline("🔄 Refresh", data="refresh_queue")]]
                 await event.edit(text, buttons=buttons)
             else:
-                text, buttons = _build_queue_list(queue.items)
+                text, buttons = build_queue_list(queue.items)
                 await event.edit(text, buttons=buttons)
         except MessageNotModifiedError:
             pass
@@ -141,7 +142,7 @@ async def _create_info_message(event, filename, state):
     sender = await event.get_sender()
     user_id = getattr(sender, "id", None)
 
-    status = _get_status_text(state)
+    status = get_status_text(state)
     text = f"{status}: {filename}"
     buttons = build_buttons(state)
 
@@ -154,7 +155,7 @@ async def _create_info_message(event, filename, state):
         await event.answer("Failed to create progress view", alert=True)
 
 
-def _get_status_text(state):
+def get_status_text(state):
     """Get status text for download state."""
     if state.cancelled:
         return "🛑 Cancelled"
@@ -165,7 +166,7 @@ def _get_status_text(state):
     return "⏬ Downloading"
 
 
-def _build_downloads_list(active_states):
+def build_downloads_list(active_states):
     """Build downloads list content."""
     lines = ["📁 Active Downloads:"]
     buttons = []
@@ -203,7 +204,7 @@ def _build_downloads_list(active_states):
     return "\n".join(lines), buttons
 
 
-def _build_queue_list(queue_items):
+def build_queue_list(queue_items):
     """Build queue list content."""
     lines = ["📝 Queued Downloads:"]
     buttons = []
@@ -219,7 +220,7 @@ def _build_queue_list(queue_items):
     return "\n".join(lines), buttons
 
 
-def _handle_existing_lists_for_new_download(filename: str):
+def handle_existing_lists_for_new_download(filename: str):
     """Register a new download with existing list messages."""
     for tracked_msg in message_tracker.get_all_list_messages():
         with contextlib.suppress(Exception):
@@ -228,4 +229,16 @@ def _handle_existing_lists_for_new_download(filename: str):
             )
 
 
-__all__ = ["register_list_handlers"]
+def _register_noop_handler(client: TelegramClient):
+    @client.on(events.CallbackQuery(pattern=b"no_action"))
+    async def _noop(event):
+        await event.answer()
+
+
+__all__ = [
+    "build_downloads_list",
+    "build_queue_list",
+    "get_status_text",
+    "handle_existing_lists_for_new_download",
+    "register_list_handlers",
+]

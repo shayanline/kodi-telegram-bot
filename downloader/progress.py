@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import time
 
@@ -34,8 +35,6 @@ class RateLimiter:
 
 
 async def wait_if_paused(state: DownloadState):
-    import asyncio
-
     while state.paused and not state.cancelled:
         await asyncio.sleep(0.4)
     if state.cancelled:

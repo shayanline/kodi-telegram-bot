@@ -98,26 +98,8 @@ def _cleanup_partials(active_snapshot):
     removed = 0
     for st in active_snapshot:
         removed += _maybe_remove(st.path, st.size)
-    try:
-        for qi in queue.items.values():
-            try:
-                if os.path.exists(qi.path):
-                    if qi.size == 0:
-                        # Unknown expected size — always remove partial
-                        try:
-                            os.remove(qi.path)
-                            remove_empty_parents(qi.path, [config.DOWNLOAD_DIR])
-                            removed += 1
-                        except Exception:
-                            pass
-                    else:
-                        sz = os.path.getsize(qi.path)
-                        if sz < qi.size * 0.98:
-                            removed += _maybe_remove(qi.path, qi.size)
-            except Exception:
-                pass
-    except Exception:
-        pass
+    for qi in queue.items.values():
+        removed += _maybe_remove(qi.path, qi.size)
     return removed
 
 

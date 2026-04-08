@@ -389,19 +389,6 @@ def test_deep_nesting(tmp_path):
         assert "ep01.mkv" in text3
 
 
-# ── Parent data helper ──
-
-
-def test_parent_data_nested():
-    data = filemanager._parent_data("Movies/foo")
-    assert data.startswith("f:n:")
-
-
-def test_parent_data_root():
-    data = filemanager._parent_data("Movies")
-    assert data == "f:r"
-
-
 # ── Safe edit helper ──
 
 

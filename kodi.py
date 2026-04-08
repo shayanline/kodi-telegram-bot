@@ -17,7 +17,6 @@ def _rpc_sync(method: str, params: dict[str, Any] | None = None) -> dict[str, An
     try:
         r = requests.post(
             config.KODI_URL,
-            headers=config.HEADERS,
             json=payload,
             auth=config.KODI_AUTH,
             timeout=5,
