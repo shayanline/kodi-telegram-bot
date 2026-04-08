@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -170,6 +171,22 @@ def test_sorted_entries_largest_first(tmp_path):
     assert entries[2] == "small.txt"
 
 
+def test_sorted_entries_by_name(tmp_path):
+    _make_tree(tmp_path, {"Zebra.txt": 10, "apple.txt": 1000, "Banana.txt": 500})
+    entries = filemanager._sorted_entries(str(tmp_path), "N")
+    assert entries == ["apple.txt", "Banana.txt", "Zebra.txt"]
+
+
+def test_sorted_entries_by_date(tmp_path):
+    _make_tree(tmp_path, {"old.txt": 10, "new.txt": 20, "mid.txt": 30})
+    now = time.time()
+    os.utime(tmp_path / "old.txt", (now - 300, now - 300))
+    os.utime(tmp_path / "mid.txt", (now - 100, now - 100))
+    os.utime(tmp_path / "new.txt", (now, now))
+    entries = filemanager._sorted_entries(str(tmp_path), "D")
+    assert entries == ["new.txt", "mid.txt", "old.txt"]
+
+
 def test_sorted_entries_empty(tmp_path):
     assert filemanager._sorted_entries(str(tmp_path)) == []
 
@@ -231,17 +248,16 @@ def test_render_dir_empty_folder(tmp_path):
 
 def test_render_dir_pagination(tmp_path):
     # Create more than _ITEMS_PER_PAGE files
-    files = {f"file_{i:02d}.mkv": (100 - i) for i in range(12)}
+    files = {f"file_{i:02d}.mkv": (100 - i) for i in range(25)}
     _make_tree(tmp_path, {"Big": files})
     with _patch_download_dir(tmp_path):
         text_p1, _buttons_p1 = filemanager._render_dir("Big", 1)
         assert "page 1/" in text_p1
-        assert "12 items" in text_p1
+        assert "25 items" in text_p1
 
         text_p2, _buttons_p2 = filemanager._render_dir("Big", 2)
         assert "page 2/" in text_p2
 
-        # Last page
         text_p3, _buttons_p3 = filemanager._render_dir("Big", 3)
         assert "page 3/" in text_p3
 
@@ -443,7 +459,7 @@ def test_render_dir_back_to_root(tmp_path):
         _text, buttons = filemanager._render_dir("Top", 1)
         bottom_row = buttons[-1]
         back_btn = bottom_row[0]
-        assert back_btn.data == b"f:r:1"
+        assert back_btn.data == b"f:r:1:S"
 
 
 # ── Render file back to parent ──
@@ -551,3 +567,150 @@ def test_single_item_no_pagination(tmp_path):
     with _patch_download_dir(tmp_path):
         text, _buttons = filemanager._render_dir("D", 1)
         assert "page" not in text  # No pagination indicator for single page
+
+
+# ── Truncation ──
+
+
+def test_truncate_short_name():
+    assert filemanager._truncate("short.txt") == "short.txt"
+
+
+def test_truncate_long_name():
+    long = "A" * 60
+    result = filemanager._truncate(long)
+    assert len(result) == filemanager._MAX_NAME_LEN
+    assert result.endswith("\u2026")
+
+
+# ── Chunk rows ──
+
+
+def test_chunk_rows_splits_at_max():
+    from telethon import Button
+
+    btns = [Button.inline(str(i), data=f"d:{i}") for i in range(12)]
+    rows = filemanager._chunk_rows(btns)
+    assert len(rows) == 3  # 5 + 5 + 2
+    assert len(rows[0]) == 5
+    assert len(rows[1]) == 5
+    assert len(rows[2]) == 2
+
+
+def test_chunk_rows_single_row():
+    from telethon import Button
+
+    btns = [Button.inline("x", data="d:x") for _ in range(3)]
+    rows = filemanager._chunk_rows(btns)
+    assert len(rows) == 1
+    assert len(rows[0]) == 3
+
+
+# ── Sort row ──
+
+
+def test_sort_row_marks_active():
+    row = filemanager._sort_row("N", "f:r:1:")
+    labels = [b.text for b in row]
+    assert any("\u2713" in lbl and "Name" in lbl for lbl in labels)
+    assert not any("\u2713" in lbl and "Size" in lbl for lbl in labels)
+
+
+def test_sort_row_callback_data():
+    row = filemanager._sort_row("S", "f:r:1:")
+    data = [b.data.decode() for b in row]
+    assert "f:r:1:S" in data
+    assert "f:r:1:N" in data
+    assert "f:r:1:D" in data
+
+
+# ── Sort indicator in text ──
+
+
+def test_render_root_shows_sort_indicator(tmp_path):
+    _make_tree(tmp_path, {"a.txt": 10})
+    with _patch_download_dir(tmp_path):
+        text, _ = filemanager._render_root(sort="N")
+        assert "by name" in text
+
+
+def test_render_dir_shows_sort_indicator(tmp_path):
+    _make_tree(tmp_path, {"D": {"a.txt": 10}})
+    with _patch_download_dir(tmp_path):
+        text, _ = filemanager._render_dir("D", 1, sort="D")
+        assert "by date" in text
+
+
+# ── Sort buttons present in views ──
+
+
+def test_render_root_has_sort_buttons(tmp_path):
+    _make_tree(tmp_path, {"a.txt": 10})
+    with _patch_download_dir(tmp_path):
+        _, buttons = filemanager._render_root()
+        all_data = [b.data.decode() for row in buttons for b in row]
+        assert any(d.startswith("f:r:1:") and d[-1] in "SND" for d in all_data)
+
+
+def test_render_dir_has_sort_buttons(tmp_path):
+    _make_tree(tmp_path, {"D": {"a.txt": 10}})
+    with _patch_download_dir(tmp_path):
+        _, buttons = filemanager._render_dir("D", 1)
+        all_data = [b.data.decode() for row in buttons for b in row]
+        assert any(":1:N" in d for d in all_data)
+        assert any(":1:D" in d for d in all_data)
+
+
+# ── Sort mode threads through navigation ──
+
+
+def test_sort_threads_through_nav_buttons(tmp_path):
+    _make_tree(tmp_path, {"Movies": {"a.mkv": 100}})
+    with _patch_download_dir(tmp_path):
+        _, buttons = filemanager._render_root(sort="N")
+        nav_data = [b.data.decode() for row in buttons for b in row if b"f:n:" in b.data or b"f:i:" in b.data]
+        assert all(d.endswith(":N") for d in nav_data)
+
+
+def test_sort_threads_through_delete_buttons(tmp_path):
+    _make_tree(tmp_path, {"D": {"a.txt": 10}})
+    with _patch_download_dir(tmp_path):
+        _, buttons = filemanager._render_dir("D", 1, sort="D")
+        del_data = [b.data.decode() for row in buttons for b in row if b"f:d:" in b.data]
+        assert all(d.endswith(":D") for d in del_data)
+
+
+# ── Entry mtime ──
+
+
+def test_entry_mtime_file(tmp_path):
+    f = tmp_path / "f.txt"
+    f.write_bytes(b"\x00")
+    assert filemanager._entry_mtime(str(f)) > 0
+
+
+def test_entry_mtime_nonexistent(tmp_path):
+    assert filemanager._entry_mtime(str(tmp_path / "nope")) == 0.0
+
+
+# ── Button row limits ──
+
+
+def test_dir_buttons_respect_row_limit(tmp_path):
+    """No button row should exceed _MAX_BTN_PER_ROW for nav/del rows."""
+    files = {f"file_{i:02d}.mkv": 100 - i for i in range(10)}
+    _make_tree(tmp_path, {"Many": files})
+    with _patch_download_dir(tmp_path):
+        _, buttons = filemanager._render_dir("Many", 1)
+        for row in buttons:
+            assert len(row) <= max(filemanager._MAX_BTN_PER_ROW, 3)
+
+
+def test_root_buttons_respect_row_limit(tmp_path):
+    """No nav button row should exceed _MAX_BTN_PER_ROW."""
+    items = {f"dir_{i:02d}": {"f.dat": 100} for i in range(10)}
+    _make_tree(tmp_path, items)
+    with _patch_download_dir(tmp_path):
+        _, buttons = filemanager._render_root()
+        for row in buttons:
+            assert len(row) <= max(filemanager._MAX_BTN_PER_ROW, 3)
