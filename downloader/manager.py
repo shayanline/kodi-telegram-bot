@@ -220,13 +220,18 @@ def _select_deletion_candidate(target_path: str, exclude: set[str]) -> str | Non
     return all_files[0][1] if all_files else None
 
 
-async def _ensure_disk_space(event, filename: str, file_size: int, path: str | None = None) -> bool:
+async def _ensure_disk_space(
+    event, filename: str, file_size: int, path: str | None = None, existing_message: Any = None
+) -> bool:
     """Interactive disk space assurance with recursive candidate deletions.
 
     Holds the concurrency slot (caller acquires it) while waiting for user decision.
     Timeout 120s -> cancellation. TEST_AUTO_ACCEPT path auto-deletes oldest files.
+    When *existing_message* is provided (e.g. the queued-slot message), prompts
+    edit that message instead of sending a new one.
     """
     target_path = path or os.path.join(config.DOWNLOAD_DIR, filename)
+    prompt_msg = existing_message
     while True:
         cumulative = _current_reserved_bytes(exclude=filename) + file_size
         projected = _projected_free_mb(cumulative)
@@ -236,11 +241,11 @@ async def _ensure_disk_space(event, filename: str, file_size: int, path: str | N
         exclude.add(target_path)
         candidate = _select_deletion_candidate(target_path, exclude)
         if not candidate:
-            await throttle.send_message(
-                event,
-                f"🛑 Storage not enough for {filename} and no deletable files found. Cancelling.",
-                reply_to=getattr(event, "id", None),
-            )
+            no_space = f"🛑 Storage not enough for {filename} and no deletable files found. Cancelling."
+            if prompt_msg:
+                await _safe_edit(prompt_msg, no_space)
+            else:
+                await throttle.send_message(event, no_space, reply_to=getattr(event, "id", None))
             log.error("No candidate for deletion; cancelling %s", filename)
             return False
         cand_name = os.path.basename(candidate)
@@ -269,10 +274,16 @@ async def _ensure_disk_space(event, filename: str, file_size: int, path: str | N
                 Button.inline("❌ No", data=f"delnx:{pid}"),
             ]
         ]
-        pending.message = await throttle.send_message(event, text, buttons=buttons, reply_to=getattr(event, "id", None))
+        if prompt_msg:
+            pending.message = await _safe_edit(prompt_msg, text, buttons=buttons)
+        else:
+            pending.message = await throttle.send_message(
+                event, text, buttons=buttons, reply_to=getattr(event, "id", None)
+            )
         if not pending.message:
             pending_deletions.pop(pid, None)
             return False
+        prompt_msg = pending.message
         try:
             await asyncio.wait_for(pending.future, timeout=120)
         except TimeoutError:
@@ -294,8 +305,7 @@ async def _ensure_disk_space(event, filename: str, file_size: int, path: str | N
         with contextlib.suppress(OSError):
             os.remove(candidate)
         if pending.message:
-            await _safe_edit(pending.message, f"Deleted {cand_name}. Re-checking space...")
-        # loop continues to re-evaluate space
+            prompt_msg = await _safe_edit(pending.message, f"Deleted {cand_name}. Re-checking space...") or prompt_msg
 
 
 async def download_with_retries(
@@ -728,7 +738,7 @@ def _register_download_handler(client: TelegramClient):
             if not pre:
                 return
             document, filename, size, path = pre
-            if queue.is_saturated():
+            if len(states) >= config.MAX_CONCURRENT_DOWNLOADS or queue.items:
                 await _do_enqueue(client, document, filename, size, path, event)
                 log.debug("Enqueued %s", filename)
                 return
@@ -932,21 +942,36 @@ def _register_qcancel(client: TelegramClient):
             await throttle.answer_callback(event, _NOT_FOUND, alert=False)
             return
         qi = queue.items.get(filename)
-        if not (qi and not qi.cancelled):
-            await throttle.answer_callback(event, _NOT_FOUND, alert=False)
-            return
-
-        text = f"⚠️ **Cancel this queued download?**\n\n{filename}"
-        yes_data = f"qcyl:{file_id}" if from_list else f"qcy:{file_id}"
-        no_data = f"qcnl:{file_id}" if from_list else f"qcn:{file_id}"
-        buttons = [
-            [
-                Button.inline("✅ Yes, Cancel", data=yes_data),
-                Button.inline("❌ No, Go Back", data=no_data),
+        if qi and not qi.cancelled:
+            text = f"⚠️ **Cancel this queued download?**\n\n{filename}"
+            yes_data = f"qcyl:{file_id}" if from_list else f"qcy:{file_id}"
+            no_data = f"qcnl:{file_id}" if from_list else f"qcn:{file_id}"
+            buttons = [
+                [
+                    Button.inline("✅ Yes, Cancel", data=yes_data),
+                    Button.inline("❌ No, Go Back", data=no_data),
+                ]
             ]
-        ]
-        await throttle.edit_message(event, text, buttons=buttons)
-        await throttle.answer_callback(event)
+            await throttle.edit_message(event, text, buttons=buttons)
+            await throttle.answer_callback(event)
+            return
+        # Item may have started — fall through to active cancel
+        st = states.get(filename)
+        if st and not st.cancelled:
+            st.confirming_cancel = True
+            text = f"⚠️ **Cancel this download?**\n\n{filename}"
+            yes_data = f"cyl:{file_id}" if from_list else f"cy:{file_id}"
+            no_data = f"cnl:{file_id}" if from_list else f"cn:{file_id}"
+            buttons = [
+                [
+                    Button.inline("✅ Yes, Cancel", data=yes_data),
+                    Button.inline("❌ No, Go Back", data=no_data),
+                ]
+            ]
+            await throttle.edit_message(event, text, buttons=buttons)
+            await throttle.answer_callback(event)
+            return
+        await throttle.answer_callback(event, _NOT_FOUND, alert=False)
 
 
 def _register_qcancel_confirm(client: TelegramClient):
@@ -967,7 +992,15 @@ def _register_qcancel_confirm(client: TelegramClient):
         if confirmed:
             qi = queue.items.get(filename)
             if not (qi and not qi.cancelled):
-                await throttle.answer_callback(event, _NOT_FOUND, alert=False)
+                # Item may have started — cancel active download
+                st = states.get(filename)
+                if st and not st.cancelled:
+                    st.mark_cancelled()
+                    await throttle.edit_message(event, f"🛑 Cancelling: {filename}", buttons=None)
+                    await _update_tracked_messages(filename, st)
+                    await throttle.answer_callback(event, "Cancelling")
+                else:
+                    await throttle.answer_callback(event, _NOT_FOUND, alert=False)
                 return
 
             for tracked in message_tracker.get_messages(filename):
@@ -1010,8 +1043,17 @@ def _register_qcancel_confirm(client: TelegramClient):
                 text = f"🕒 Queued: {filename}\nWaiting for free slot (limit {config.MAX_CONCURRENT_DOWNLOADS})"
                 buttons = [[Button.inline("🛑 Cancel", data=f"qcancel:{qi.file_id}")]]
             else:
-                text = _NOT_FOUND
-                buttons = None
+                st = states.get(filename)
+                if st and not st.cancelled:
+                    status = get_status_text(st)
+                    progress_text = st.get_progress_text()
+                    text = f"{status}: {st.filename}"
+                    if progress_text:
+                        text += f"\n{progress_text}"
+                    buttons = build_buttons(st)
+                else:
+                    text = _NOT_FOUND
+                    buttons = None
             await throttle.edit_message(event, text, buttons=buttons)
             await throttle.answer_callback(event)
 
@@ -1079,7 +1121,7 @@ def _register_category_selection(client: TelegramClient):
             if states.get(final_name) or queue.items.get(final_name):
                 await throttle.answer_callback(event, "Already queued", alert=False)
                 return
-            if queue.is_saturated():
+            if len(states) >= config.MAX_CONCURRENT_DOWNLOADS or queue.items:
                 await _do_enqueue(client, document, final_name, size, path, orig_event)
                 await throttle.answer_callback(event, "Queued", alert=False)
                 return

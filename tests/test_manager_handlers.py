@@ -739,12 +739,15 @@ class FakeCallbackEvent:
     def __init__(self, data: bytes):
         self.data = data
         self._answered = None
+        self._edited_text = None
+        self._edited_buttons = None
 
     async def answer(self, text=None, **kw):
         self._answered = text
 
     async def edit(self, text, **kw):
-        pass
+        self._edited_text = text
+        self._edited_buttons = kw.get("buttons")
 
 
 def test_deletion_callback_accept(monkeypatch):
@@ -841,3 +844,139 @@ def test_deletion_callback_already_processed():
 
     asyncio.run(_run())
     client.loop.close()
+
+
+# ── _ensure_disk_space with existing_message ──
+
+
+def test_ensure_disk_space_edits_existing_message(monkeypatch, tmp_path):
+    """When existing_message is provided and no candidate, edit that message."""
+    monkeypatch.setattr(config, "DOWNLOAD_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "MIN_FREE_DISK_MB", 999999)
+    monkeypatch.setattr(config, "ORGANIZE_MEDIA", False)
+    monkeypatch.setattr(utils, "free_disk_mb", lambda _: 1)
+
+    existing = FakeMsg()
+    ev = FakeEvent()
+
+    async def _run():
+        from downloader import manager
+
+        return await manager._ensure_disk_space(ev, "f.mp4", 100, existing_message=existing)
+
+    assert asyncio.run(_run()) is False
+    assert existing.edited is not None
+    assert "no deletable files found" in existing.edited
+    assert ev._responded is None
+
+
+def test_ensure_disk_space_existing_message_not_touched_when_enough(monkeypatch, tmp_path):
+    """When space is sufficient, existing_message is not edited."""
+    monkeypatch.setattr(config, "DOWNLOAD_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "MIN_FREE_DISK_MB", 10)
+    monkeypatch.setattr(utils, "free_disk_mb", lambda _: 1000)
+
+    existing = FakeMsg()
+    ev = FakeEvent()
+
+    async def _run():
+        from downloader import manager
+
+        return await manager._ensure_disk_space(ev, "f.mp4", 100, existing_message=existing)
+
+    assert asyncio.run(_run()) is True
+    assert existing.edited is None
+
+
+# ── Queue cancel fallthrough to active cancel ──
+
+
+def test_qcancel_falls_through_to_active():
+    """Queue cancel falls through to active cancel when item has started."""
+    from downloader import manager
+    from downloader.state import register_file_id
+
+    filename = "started.mp4"
+    file_id = register_file_id(filename)
+    st = DownloadState(filename, "/tmp/started.mp4", 1000)
+    states[filename] = st
+
+    client = FakeClient()
+    manager._register_qcancel(client)
+    handler = client.handlers[0]
+
+    async def _run():
+        ev = FakeCallbackEvent(f"qcancel:{file_id}".encode())
+        await handler(ev)
+        return ev
+
+    try:
+        ev = asyncio.run(_run())
+        assert st.confirming_cancel is True
+        assert ev._edited_text is not None
+        assert "Cancel this download" in ev._edited_text
+    finally:
+        states.pop(filename, None)
+        file_id_map.pop(file_id, None)
+        st.confirming_cancel = False
+        client.loop.close()
+
+
+def test_qcancel_confirm_falls_through_to_active():
+    """Queue cancel confirm cancels the active download when item has started."""
+    from downloader import manager
+    from downloader.state import register_file_id
+
+    filename = "started2.mp4"
+    file_id = register_file_id(filename)
+    st = DownloadState(filename, "/tmp/started2.mp4", 1000)
+    states[filename] = st
+
+    client = FakeClient()
+    manager._register_qcancel_confirm(client)
+    handler = client.handlers[0]
+
+    async def _run():
+        ev = FakeCallbackEvent(f"qcy:{file_id}".encode())
+        await handler(ev)
+        return ev
+
+    try:
+        ev = asyncio.run(_run())
+        assert st.cancelled is True
+        assert ev._answered == "Cancelling"
+    finally:
+        states.pop(filename, None)
+        file_id_map.pop(file_id, None)
+        client.loop.close()
+
+
+def test_qcancel_decline_shows_active_state():
+    """Declining queue cancel shows active download progress when item has started."""
+    from downloader import manager
+    from downloader.state import register_file_id
+
+    filename = "started3.mp4"
+    file_id = register_file_id(filename)
+    st = DownloadState(filename, "/tmp/started3.mp4", 1000)
+    st.update_progress(500, 50, "1 MB/s")
+    states[filename] = st
+
+    client = FakeClient()
+    manager._register_qcancel_confirm(client)
+    handler = client.handlers[0]
+
+    async def _run():
+        ev = FakeCallbackEvent(f"qcn:{file_id}".encode())
+        await handler(ev)
+        return ev
+
+    try:
+        ev = asyncio.run(_run())
+        assert st.cancelled is False
+        assert ev._edited_text is not None
+        assert "Downloading" in ev._edited_text
+    finally:
+        states.pop(filename, None)
+        file_id_map.pop(file_id, None)
+        client.loop.close()
