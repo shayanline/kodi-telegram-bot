@@ -1,5 +1,6 @@
-import os
+import contextlib
 import importlib
+import os
 
 import logger
 
@@ -28,10 +29,8 @@ def test_logger_lower_bound_and_idempotent(tmp_path, monkeypatch):
     for _h in lg.handlers:
         if _h.__class__.__name__ == "TruncatingFileHandler":
             file_handler = _h
-            try:  # pragma: no cover - defensive
+            with contextlib.suppress(Exception):  # pragma: no cover - defensive
                 _h.flush()
-            except Exception:
-                pass
     assert file_handler is not None
     handler_path = file_handler.baseFilename
     assert os.path.exists(handler_path)

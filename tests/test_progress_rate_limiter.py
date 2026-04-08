@@ -1,6 +1,7 @@
 import time
-from downloader.progress import RateLimiter, _calc, _should_notify_kodi
+
 import kodi
+from downloader.progress import RateLimiter, _calc, _should_notify_kodi
 
 
 def test_rate_limiter(monkeypatch):

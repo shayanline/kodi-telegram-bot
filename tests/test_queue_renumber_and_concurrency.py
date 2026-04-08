@@ -2,20 +2,25 @@ import asyncio
 
 from downloader.queue import DownloadQueue, QueuedItem
 
+
 class DummyEvent:
     async def respond(self, *a, **k):  # pragma: no cover - test stub only
         await asyncio.sleep(0)
         return None
 
+
 class DummyMsg:
     def __init__(self):
         self.edits = []
+
     async def edit(self, text, buttons=None):  # pragma: no cover - trivial
         self.edits.append(text)
         await asyncio.sleep(0)
 
+
 async def _runner(client, qi):  # pragma: no cover - tiny helper
     await asyncio.sleep(0.01)  # keep task alive briefly
+
 
 async def _prepare_queue(n, limit):
     q = DownloadQueue(limit=limit)
@@ -29,6 +34,7 @@ async def _prepare_queue(n, limit):
         qi.file_id = f"id{i}"
         await q.enqueue(qi)
     return q
+
 
 async def _test_renumber():
     q = await _prepare_queue(4, limit=2)
@@ -44,9 +50,11 @@ async def _test_renumber():
     await q.stop()
     return True
 
+
 def test_queue_renumber_and_concurrency():
     renumber_ok = asyncio.run(_test_renumber())
     assert renumber_ok is True
+
     # Basic concurrency smoke: ensure queue processes more than one item without serial bottleneck
     # by enqueuing several small tasks and confirming total duration < artificial serial time.
     async def _timed():
@@ -55,6 +63,7 @@ def test_queue_renumber_and_concurrency():
         await asyncio.sleep(0.2)
         await q.stop()
         return asyncio.get_event_loop().time() - start
+
     elapsed = asyncio.run(_timed())
     # If serial (4 * 0.01 per task plus overhead) ~0.04; with concurrency similarly small but we allow slack
     assert elapsed < 1.0

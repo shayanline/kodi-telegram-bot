@@ -1,8 +1,10 @@
 """Thin helper layer for interacting with Kodi JSON-RPC."""
+
 from __future__ import annotations
 
-import requests
 from typing import Any
+
+import requests
 
 import config
 from logger import log
@@ -22,7 +24,7 @@ def _rpc(method: str, params: dict[str, Any] | None = None) -> dict[str, Any] | 
         if r.status_code != 200:
             log.warning("Kodi RPC non-200 (%s) method=%s", r.status_code, method)
         return data
-    except Exception as e:  # noqa: E722
+    except Exception as e:
         log.error("Kodi RPC error (%s): %s", method, e)
         return None
 
@@ -48,4 +50,5 @@ def progress_notify(filename: str, percent: int, speed: str) -> None:
     bar = "▓" * (percent // 10) + "░" * (10 - percent // 10)
     notify(f"Downloading: {filename}", f"{bar} {percent}% | {speed}/s")
 
-__all__ = ["notify", "play", "is_playing", "progress_notify"]
+
+__all__ = ["is_playing", "notify", "play", "progress_notify"]

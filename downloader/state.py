@@ -1,29 +1,82 @@
+"""Download state, message tracking, and shared mutable registries.
+
+Houses the global ``states`` dict and ``file_id_map`` to break circular
+imports between downloader sub-modules.
+"""
+
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
-from typing import Optional, Any, List
+from enum import Enum
+from typing import Any
+
 from telethon.tl.custom.message import Message
+
+import utils
+from logger import log
+
+from .ids import get_file_id
+
+
+class MessageType(Enum):
+    """Types of messages that can be tracked."""
+
+    PROGRESS = "progress"
+    DOWNLOAD_LIST = "download_list"
+    QUEUE_LIST = "queue_list"
+    QUEUED = "queued"
+    ALREADY_DOWNLOADING = "already_downloading"
+    ALREADY_QUEUED = "already_queued"
+
+
+@dataclass(slots=True)
+class TrackedMessage:
+    """Represents a message being tracked for updates."""
+
+    message: Message
+    message_type: MessageType
+    user_id: int | None = None
+
+
+class CancelledDownload(Exception):  # pragma: no cover - simple marker
+    pass
 
 
 @dataclass(slots=True)
 class DownloadState:
     """Holds mutable per-download state.
 
-    Added 'size' to enable cumulative disk space prediction across concurrent
-    downloads. We keep the *expected* size (bytes) rather than bytes written so
-    far to stay conservative and guarantee post-download free space >= threshold.
+    ``size`` is the *expected* total (bytes) so cumulative disk-space
+    prediction across concurrent downloads stays conservative.
     """
 
     filename: str
     path: str
-    size: int  # expected total size in bytes
-    message: Optional[Message] = None
-    original_event: Optional[Any] = None  # Original upload event (reply target for progress)
+    size: int
+    message: Message | None = None
+    original_event: Any | None = None
     paused: bool = False
     cancelled: bool = False
+    completed: bool = False
     last_text: str = ""
-    # Additional progress mirror messages (for duplicate requests from other users)
-    extra_messages: List[Message] = field(default_factory=list)
+    downloaded_bytes: int = 0
+    progress_percent: int = 0
+    speed: str = "0 B/s"
+
+    def update_progress(self, received: int, percent: int, speed: str):
+        self.downloaded_bytes = received
+        self.progress_percent = percent
+        self.speed = speed
+
+    def get_progress_text(self) -> str:
+        if self.cancelled or self.completed:
+            return ""
+        if self.paused:
+            return f"⏸️ Paused • {self.progress_percent}% • {utils.humanize_size(self.downloaded_bytes)}"
+        if self.progress_percent > 0:
+            return f"📊 {self.progress_percent}% • {utils.humanize_size(self.downloaded_bytes)} • {self.speed}/s"
+        return ""
 
     def mark_paused(self):
         if not self.cancelled:
@@ -36,8 +89,93 @@ class DownloadState:
     def mark_cancelled(self):
         self.cancelled = True
 
+    def mark_completed(self):
+        if not self.cancelled:
+            self.completed = True
+            self.paused = False
 
-class CancelledDownload(Exception):  # pragma: no cover - simple marker
-    pass
 
-__all__ = ["DownloadState", "CancelledDownload"]
+class MessageTracker:
+    """Central registry for Telegram messages associated with downloads.
+
+    Single source of truth — replaces the previous dual-tracking approach
+    (per-state lists + global registry).
+    """
+
+    def __init__(self):
+        self._messages: dict[str, list[TrackedMessage]] = {}
+
+    def register_message(self, filename: str, message, message_type: MessageType, user_id: int | None = None):
+        tracked = TrackedMessage(message, message_type, user_id)
+        if filename not in self._messages:
+            self._messages[filename] = []
+        self._messages[filename].append(tracked)
+
+    def get_messages(self, filename: str, message_type: MessageType | None = None) -> list[TrackedMessage]:
+        messages = self._messages.get(filename, [])
+        if message_type is not None:
+            return [tm for tm in messages if tm.message_type == message_type]
+        return list(messages)
+
+    def get_all_list_messages(self) -> list[TrackedMessage]:
+        result: list[TrackedMessage] = []
+        for messages in self._messages.values():
+            result.extend(
+                tm for tm in messages if tm.message_type in (MessageType.DOWNLOAD_LIST, MessageType.QUEUE_LIST)
+            )
+        return result
+
+    def cleanup_file(self, filename: str):
+        self._messages.pop(filename, None)
+
+
+message_tracker = MessageTracker()
+
+# ── Shared mutable state (central location to avoid circular imports) ──
+
+states: dict[str, DownloadState] = {}
+file_id_map: dict[str, str] = {}
+
+
+def register_file_id(filename: str) -> str:
+    """Register filename and return its short ID."""
+    file_id = get_file_id(filename)
+    file_id_map[file_id] = filename
+    log.debug("Registered file id %s for %s", file_id, filename)
+    return file_id
+
+
+def resolve_file_id(file_id: str) -> str | None:
+    """Resolve file ID back to filename."""
+    return file_id_map.get(file_id)
+
+
+@dataclass
+class PendingDeletion:
+    """Tracks an interactive disk-space deletion prompt."""
+
+    choice: str | None = None
+    message: Any | None = None
+    future: asyncio.Future = field(init=False)
+
+    def __post_init__(self):
+        self.future = asyncio.get_running_loop().create_future()
+
+
+pending_deletions: dict[str, PendingDeletion] = {}
+
+
+__all__ = [
+    "CancelledDownload",
+    "DownloadState",
+    "MessageTracker",
+    "MessageType",
+    "PendingDeletion",
+    "TrackedMessage",
+    "file_id_map",
+    "message_tracker",
+    "pending_deletions",
+    "register_file_id",
+    "resolve_file_id",
+    "states",
+]

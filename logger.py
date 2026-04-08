@@ -11,14 +11,15 @@ an informational header line is written, then logging continues. Only a single
 log file is maintained (no multiple rotations) to satisfy the strict size cap
 requirement.
 """
+
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
-__all__ = ["log", "get_logger"]
+__all__ = ["get_logger", "log"]
 
 
 class TruncatingFileHandler(logging.FileHandler):
@@ -28,7 +29,7 @@ class TruncatingFileHandler(logging.FileHandler):
     by ``max_bytes``. It formats the record first so we can size-check precisely.
     """
 
-    def __init__(self, filename: str, max_bytes: int, encoding: Optional[str] = "utf-8"):
+    def __init__(self, filename: str, max_bytes: int, encoding: str | None = "utf-8"):
         # Use append mode so existing logs preserved until first overflow.
         super().__init__(filename, mode="a", encoding=encoding, delay=True)
         self.max_bytes = max_bytes
@@ -36,24 +37,18 @@ class TruncatingFileHandler(logging.FileHandler):
     def _ensure_stream(self):
         if self.stream is None:
             self.stream = self._open()
-        try:
+        with contextlib.suppress(Exception):  # pragma: no cover
             self.stream.flush()
-        except Exception:  # pragma: no cover
-            pass
 
     def _truncate_and_header(self, current_size: int):
-        try:
+        with contextlib.suppress(Exception):  # pragma: no cover
             if self.stream:
                 self.stream.close()
-        except Exception:  # pragma: no cover
-            pass
-        self.stream = open(self.baseFilename, "w", encoding=self.encoding or "utf-8")
-        header = (
-            f"--- log truncated at {datetime.now(timezone.utc).isoformat()} (previous size {current_size} bytes) ---"
-        )
+        self.stream = open(self.baseFilename, "w", encoding=self.encoding or "utf-8")  # noqa: SIM115
+        header = f"--- log truncated at {datetime.now(UTC).isoformat()} (previous size {current_size} bytes) ---"
         self.stream.write(header + "\n")
 
-    def emit(self, record: logging.LogRecord):  # noqa: D401
+    def emit(self, record: logging.LogRecord):
         try:
             msg = self.format(record)
             self._ensure_stream()
@@ -64,10 +59,8 @@ class TruncatingFileHandler(logging.FileHandler):
             if current_size + len(msg) + 1 > self.max_bytes:
                 self._truncate_and_header(current_size)
             self.stream.write(msg + "\n")
-            try:
+            with contextlib.suppress(Exception):  # pragma: no cover
                 self.stream.flush()
-            except Exception:  # pragma: no cover
-                pass
         except Exception:
             self.handleError(record)
 
@@ -110,15 +103,15 @@ def get_logger() -> logging.Logger:
     logger.propagate = False
 
     # Add stderr handler only if one not already present (avoid duplicates on reload)
-    if not any(isinstance(h, logging.StreamHandler) and not isinstance(h, TruncatingFileHandler) for h in logger.handlers):
+    if not any(
+        isinstance(h, logging.StreamHandler) and not isinstance(h, TruncatingFileHandler) for h in logger.handlers
+    ):
         stderr_handler = logging.StreamHandler()
         stderr_handler.setLevel(level)
         stderr_handler.setFormatter(logging.Formatter(fmt, datefmt=datefmt))
         logger.addHandler(stderr_handler)
 
-    logger.debug(
-        "Logger initialized (file=%s, max_mb=%s, level=%s)", log_file, max_mb, level_name
-    )
+    logger.debug("Logger initialized (file=%s, max_mb=%s, level=%s)", log_file, max_mb, level_name)
     return logger
 
 

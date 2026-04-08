@@ -14,8 +14,8 @@ def reload_env(monkeypatch, value: str | None):
 
 def test_open_access(monkeypatch):
     reload_env(monkeypatch, None)
-    assert config.ALLOWED_USER_IDS == set()
-    assert config.ALLOWED_USERNAMES == set()
+    assert set() == config.ALLOWED_USER_IDS
+    assert set() == config.ALLOWED_USERNAMES
     assert config.is_user_allowed(123, "anyone") is True
 
 

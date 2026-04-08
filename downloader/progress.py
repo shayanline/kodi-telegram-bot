@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import contextlib
 import time
-import asyncio
-import utils
+
 import config
 import kodi
-from .state import DownloadState, CancelledDownload
+import utils
+
+from .buttons import build_buttons
+from .state import CancelledDownload, DownloadState
 
 
 class RateLimiter:
@@ -31,6 +34,8 @@ class RateLimiter:
 
 
 async def wait_if_paused(state: DownloadState):
+    import asyncio
+
     while state.paused and not state.cancelled:
         await asyncio.sleep(0.4)
     if state.cancelled:
@@ -44,21 +49,15 @@ def create_progress_callback(filename: str, start: float, rate: RateLimiter, msg
         try:
             if utils.maybe_memory_warning(config.MEMORY_WARNING_PERCENT):
                 kodi.notify("Memory Warning", f"High RAM usage > {config.MEMORY_WARNING_PERCENT}%")
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
     def _build_edit_kwargs():
-        if state and not state.cancelled:
-            try:  # pragma: no cover - defensive
-                from .buttons import build_buttons  # local import to avoid cycle
-                return {"buttons": build_buttons(state)}
-            except Exception:  # noqa: BLE001
-                return {}
-        return {}
+        return {"buttons": build_buttons(state)} if state else {}
 
     async def send_tg_update(percent: int, received: int, total: int, speed: str):
         bar = "▓" * (percent // 10) + "░" * (10 - percent // 10)
-        try:
+        with contextlib.suppress(Exception):
             await msg.edit(
                 f"Downloading: {filename}\n"
                 f"Progress: {bar} {percent}%\n"
@@ -66,8 +65,6 @@ def create_progress_callback(filename: str, start: float, rate: RateLimiter, msg
                 f"Speed: {speed}/s",
                 **_build_edit_kwargs(),
             )
-        except Exception:  # noqa: BLE001
-            pass
         maybe_warn_memory()
 
     async def progress(received: int, total: int):
@@ -77,8 +74,13 @@ def create_progress_callback(filename: str, start: float, rate: RateLimiter, msg
         if not _update_activity(last, received, now):
             return
         percent, speed = _calc(received, total, now - start)
+
+        if state:
+            state.update_progress(received, percent, speed)
+
         if rate.telegram_ok():
             await send_tg_update(percent, received, total, speed)
+
         if _should_notify_kodi(percent, rate):
             kodi.progress_notify(filename, percent, speed)
 
@@ -111,5 +113,6 @@ def _calc(received: int, total: int, elapsed: float):
 
 def _should_notify_kodi(percent: int, rate: RateLimiter) -> bool:
     return percent % 10 == 0 and rate.kodi_ok() and not kodi.is_playing()
+
 
 __all__ = ["RateLimiter", "create_progress_callback", "wait_if_paused"]

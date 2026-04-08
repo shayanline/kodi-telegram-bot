@@ -1,21 +1,27 @@
 import asyncio
 
-from downloader.manager import _handle_active_duplicate, DownloadState  # type: ignore
+from downloader.manager import _handle_active_duplicate
+from downloader.state import DownloadState
+
 
 class Msg:
     def __init__(self):
         self.id = 111
 
+
 class Ev:
     def __init__(self, mid):
         self.id = mid
         self.replies = []
+
     async def respond(self, text, reply_to=None, **_):  # pragma: no cover - test stub
         self.replies.append((text, reply_to))
         await asyncio.sleep(0)
 
+
 class ActiveEvent(Ev):
     pass
+
 
 async def _run():
     active_orig = ActiveEvent(10)

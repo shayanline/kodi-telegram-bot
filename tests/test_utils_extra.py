@@ -8,5 +8,5 @@ def test_humanize_size_basic():
 
 def test_humanize_size_large_caps():
     # Larger than TB should still not crash and report TB
-    val = 1024 ** 6  # beyond defined units
+    val = 1024**6  # beyond defined units
     assert utils.humanize_size(val).endswith("TB")

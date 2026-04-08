@@ -1,11 +1,14 @@
 import asyncio
 
+from downloader.progress import RateLimiter, create_progress_callback
 from downloader.queue import DownloadQueue, QueuedItem
-from downloader.progress import create_progress_callback, RateLimiter
-from downloader.state import DownloadState
-from downloader.manager import _register_file_id  # internal helper for mapping
-from downloader.manager import file_id_map, states  # type: ignore
 from downloader.queue import queue as global_queue
+from downloader.state import (
+    DownloadState,
+    file_id_map,
+    register_file_id,
+    states,
+)
 
 
 class DummyEvent:
@@ -40,7 +43,7 @@ def test_pause_uses_last_text():
     st.message = msg
     st.last_text = "Starting download of fileC.bin..."  # what we set in code
     states[st.filename] = st
-    _register_file_id(st.filename)
+    register_file_id(st.filename)
     # Simulate pause callback logic directly (equivalent to pressing pause)
     st.mark_paused()
     # mimic update call
@@ -48,7 +51,7 @@ def test_pause_uses_last_text():
     assert "Queued" not in (msg.last or "")
     # cleanup
     states.pop(st.filename, None)
-    fid = _register_file_id(st.filename)
+    fid = register_file_id(st.filename)
     file_id_map.pop(fid, None)
 
 
@@ -61,6 +64,7 @@ def test_queue_cancel_removes_item():
         assert "fileA.bin" in q.items
         assert q.cancel("fileA.bin") is True
         assert "fileA.bin" not in q.items
+
     asyncio.run(_inner())
 
 
@@ -72,6 +76,7 @@ def test_progress_keeps_buttons():
         await cb(100, 1000)
         await cb(500, 1000)
         assert msg.buttons_history
+
     asyncio.run(_inner())
 
 
@@ -84,7 +89,7 @@ def test_queued_cancel_ui(monkeypatch):
     qi = QueuedItem("fileD.bin", object(), 10, "/tmp/fileD.bin", DummyEvent())
     qi.message = stub
     global_queue.items[qi.filename] = qi  # inject directly without using async enqueue
-    _register_file_id(qi.filename)
+    register_file_id(qi.filename)
     # Call queue.cancel (normally invoked via callback handler) and then mimic manager UI update
     assert global_queue.cancel(qi.filename) is True
     # Simulate what handler does

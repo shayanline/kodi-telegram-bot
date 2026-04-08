@@ -1,25 +1,27 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass
-from typing import Dict, Protocol, Any, List
+from typing import Any, Protocol
+
 from telethon import TelegramClient
+
 import config
 
 
 class RunnerFunc(Protocol):
-    async def __call__(self, client: TelegramClient, qi: "QueuedItem") -> Any: ...
-
+    async def __call__(self, client: TelegramClient, qi: QueuedItem) -> Any: ...
 
 
 @dataclass(slots=True)
 class QueuedItem:
     filename: str
-    document: any
+    document: Any
     size: int
     path: str
-    event: any  # original enqueue event
-    message: any | None = None
+    event: Any  # original enqueue event
+    message: Any | None = None
     cancelled: bool = False
     # Events from other users requesting same file while queued; will receive progress when started
     watcher_events: list[Any] | None = None
@@ -33,7 +35,7 @@ class QueuedItem:
 
 
 class DownloadQueue:
-    """In‑memory async FIFO queue for pending downloads with cancellation support."""
+    """In-memory async FIFO queue for pending downloads with cancellation support."""
 
     def __init__(self, limit: int):
         # Basic capacity + synchronization primitives
@@ -41,12 +43,12 @@ class DownloadQueue:
         self._semaphore = asyncio.Semaphore(limit)
         self._queue: asyncio.Queue[str] = asyncio.Queue()
         # Visible queued items (filename -> QueuedItem)
-        self.items: Dict[str, QueuedItem] = {}
+        self.items: dict[str, QueuedItem] = {}
         # Lock protects enqueue + renumber
         self._lock = asyncio.Lock()
         # Worker bookkeeping
         self._worker_task: asyncio.Task | None = None
-        self._active_tasks: List[asyncio.Task] = []
+        self._active_tasks: list[asyncio.Task] = []
         self._runner: RunnerFunc | None = None
         self._stopping = False
 
@@ -63,7 +65,7 @@ class DownloadQueue:
         return self._semaphore.locked()
 
     async def enqueue(self, qi: QueuedItem) -> int:
-        """Enqueue an item and return its 1‑based position at insertion.
+        """Enqueue an item and return its 1-based position at insertion.
 
         Positions are dynamic: when earlier items start or are cancelled the
         remaining queued messages are renumbered. We still need a lock to avoid
@@ -94,7 +96,7 @@ class DownloadQueue:
         # Schedule renumber of remaining items (fire-and-forget)
         try:  # pragma: no cover - best effort
             loop = asyncio.get_running_loop()
-            loop.create_task(self._renumber())
+            _task = loop.create_task(self._renumber())  # noqa: RUF006
         except Exception:
             pass
         return True
@@ -110,7 +112,7 @@ class DownloadQueue:
             await self._queue.put("__STOP__")
             try:
                 await asyncio.wait_for(self._worker_task, timeout=5)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 self._worker_task.cancel()
 
     def slot(self):  # pragma: no cover
@@ -155,14 +157,13 @@ class DownloadQueue:
             try:
                 if self._runner:
                     from . import manager  # local import to avoid cycle
-                    if not await manager._ensure_disk_space(qi.event, qi.filename, qi.size, qi.path, from_queue=True):  # type: ignore[attr-defined]
+
+                    if not await manager._ensure_disk_space(qi.event, qi.filename, qi.size, qi.path, from_queue=True):
                         return
                     await self._runner(client, qi)
-            except Exception:  # noqa: BLE001
-                try:
+            except Exception:
+                with contextlib.suppress(Exception):
                     await qi.event.respond(f"❌ Failed: {qi.filename}")
-                except Exception:  # noqa: BLE001
-                    pass
 
     async def _cleanup_remaining(self):
         for qi in self.items.values():
@@ -170,7 +171,7 @@ class DownloadQueue:
             try:
                 if qi.message:
                     await qi.message.edit(f"🛑 Cancelled (shutdown): {qi.filename}")
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
         self.items.clear()
 
@@ -184,8 +185,8 @@ class DownloadQueue:
                 return
             try:
                 from telethon import Button as button_cls  # imported lazily
-            except Exception:  # noqa: BLE001
-                button_cls = None  # type: ignore
+            except Exception:
+                button_cls = None
             # Copy values snapshot to avoid RuntimeError if items mutates while iterating
             snapshot = list(self.items.values())
             for idx, qi in enumerate(snapshot, start=1):
@@ -199,10 +200,10 @@ class DownloadQueue:
                         f"🕒 Queued #{idx}: {qi.filename}\nWaiting for free slot (limit {self.limit})",
                         buttons=buttons,
                     )
-                except Exception:  # noqa: BLE001
+                except Exception:
                     pass
 
 
 queue = DownloadQueue(config.MAX_CONCURRENT_DOWNLOADS)
 
-__all__ = ["queue", "QueuedItem", "DownloadQueue"]
+__all__ = ["DownloadQueue", "QueuedItem", "queue"]

@@ -1,7 +1,8 @@
 import os
-from downloader.manager import DownloadState
-import main
+
 import config
+import main
+from downloader.state import DownloadState
 
 
 def test_cleanup_partials(tmp_path, monkeypatch):

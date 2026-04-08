@@ -1,8 +1,8 @@
 import asyncio
 
 import config
-from downloader.state import DownloadState
 from downloader.manager import download_with_retries
+from downloader.state import DownloadState
 
 
 class FakeMessage:
@@ -19,10 +19,10 @@ class FlakyClient:
         self.calls = 0
         self.fail_times = fail_times
 
-    async def download_media(self, document, file, progress_callback=None):  # noqa: D401
+    async def download_media(self, document, file, progress_callback=None):
         self.calls += 1
         if self.calls <= self.fail_times:
-            raise asyncio.TimeoutError()
+            raise TimeoutError()
         await asyncio.sleep(0)
 
 
