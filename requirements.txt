@@ -12,4 +12,6 @@ hachoir>=3.3.0  # For validation
 
 # Dev / testing (optional)
 pytest>=8.2.0
+pytest-cov>=6.0.0
 mypy>=1.10.0
+ruff>=0.8.0
