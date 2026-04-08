@@ -1,9 +1,8 @@
 import asyncio
 
-from telethon.errors import MessageNotModifiedError
-
 import kodi
 import kodiremote
+import throttle
 
 
 def _playing_state():
@@ -432,7 +431,7 @@ def test_callback_switch_to_nav():
 
     async def _run():
         text, buttons = kodiremote._render_navigation()
-        await kodiremote._safe_edit(event, text, buttons)
+        await throttle.edit_message(event, text, buttons=buttons, parse_mode="md")
         await event.answer()
 
     asyncio.run(_run())
@@ -475,7 +474,7 @@ def test_callback_refresh_navigation(monkeypatch):
         is_nav = msg and "Navigation" in (msg.text or "")
         assert is_nav
         text, buttons = kodiremote._render_navigation()
-        await kodiremote._safe_edit(event, text, buttons)
+        await throttle.edit_message(event, text, buttons=buttons, parse_mode="md")
         await event.answer("Refreshed")
 
     asyncio.run(_run())
@@ -513,11 +512,13 @@ def test_callback_input_navigation(monkeypatch):
         assert expected in calls
 
 
-def test_safe_edit_suppresses_not_modified():
-    """_safe_edit should suppress MessageNotModifiedError."""
+def test_throttle_edit_suppresses_not_modified():
+    """throttle.edit_message should suppress MessageNotModifiedError."""
+    from telethon.errors import MessageNotModifiedError
 
     class NotModifiedEvent:
         async def edit(self, text, buttons=None, parse_mode=None):
             raise MessageNotModifiedError(None)
 
-    asyncio.run(kodiremote._safe_edit(NotModifiedEvent(), "text", []))
+    result = asyncio.run(throttle.edit_message(NotModifiedEvent(), "text"))
+    assert result is not None

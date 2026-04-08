@@ -9,11 +9,11 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from telethon import Button, TelegramClient, events
-from telethon.errors import MessageNotModifiedError
 from telethon.tl.types import Document
 
 import config
 import kodi
+import throttle
 import utils
 from logger import log
 from organizer import build_final_path, parse_filename
@@ -68,27 +68,15 @@ def _prune_stale_categories():
 
 
 async def _safe_edit(msg, text: str, buttons=None, state: DownloadState | None = None):
-    """Edit a message, falling back to a new response if editing fails.
-
-    When the original message was deleted or otherwise uneditable, sends a new
-    message to the same chat and updates ``state.message`` so subsequent edits
-    target the replacement.
-    """
-    try:
-        await msg.edit(text, buttons=buttons)
-        return msg
-    except MessageNotModifiedError:
-        return msg
-    except Exception:
-        log.debug("Edit failed, sending fallback message")
-        try:
-            new_msg = await msg.respond(text, buttons=buttons)
-            if state and new_msg:
-                state.message = new_msg
-            return new_msg
-        except Exception:
-            log.debug("safe_edit: both edit and respond failed")
-            return None
+    """Edit a message, falling back to a new response if editing fails."""
+    result = await throttle.edit_message(msg, text, buttons=buttons)
+    if result is not None:
+        return result
+    log.debug("Edit failed, sending fallback message")
+    new_msg = await throttle.send_message(msg, text, buttons=buttons)
+    if state and new_msg:
+        state.message = new_msg
+    return new_msg
 
 
 async def _update_tracked_messages(filename: str, state: DownloadState):
@@ -146,7 +134,9 @@ async def pre_checks(event: events.NewMessage.Event, text: str | None = None):
     path, filename = build_final_path(original_filename, text=text)
     try:
         if utils.free_disk_mb(config.DOWNLOAD_DIR) < config.DISK_WARNING_MB:
-            await event.respond(f"⚠️ Low disk space (< {config.DISK_WARNING_MB}MB free). Consider cleaning up soon.")
+            await throttle.send_message(
+                event, f"⚠️ Low disk space (< {config.DISK_WARNING_MB}MB free). Consider cleaning up soon."
+            )
     except Exception:
         pass
     if os.path.exists(path):
@@ -155,13 +145,15 @@ async def pre_checks(event: events.NewMessage.Event, text: str | None = None):
         except OSError:
             actual = 0
         if file_size == 0 or actual >= file_size * 0.98:
-            await event.respond(
+            await throttle.send_message(
+                event,
                 f"ℹ️ File already exists: {filename} (size: {utils.humanize_size(actual)})",  # noqa: RUF001
                 reply_to=getattr(event, "id", None),
             )
             log.info("Skip existing file %s", filename)
             return None
-        await event.respond(
+        await throttle.send_message(
+            event,
             f"⚠️ Found incomplete existing file ({utils.humanize_size(actual)}/{utils.humanize_size(file_size)}); re-downloading...",
             reply_to=getattr(event, "id", None),
         )
@@ -234,11 +226,11 @@ async def _ensure_disk_space(event, filename: str, file_size: int, path: str | N
         exclude.add(target_path)
         candidate = _select_deletion_candidate(target_path, exclude)
         if not candidate:
-            with contextlib.suppress(Exception):
-                await event.respond(
-                    f"🛑 Storage not enough for {filename} and no deletable files found. Cancelling.",
-                    reply_to=getattr(event, "id", None),
-                )
+            await throttle.send_message(
+                event,
+                f"🛑 Storage not enough for {filename} and no deletable files found. Cancelling.",
+                reply_to=getattr(event, "id", None),
+            )
             log.error("No candidate for deletion; cancelling %s", filename)
             return False
         cand_name = os.path.basename(candidate)
@@ -267,9 +259,8 @@ async def _ensure_disk_space(event, filename: str, file_size: int, path: str | N
                 Button.inline("❌ No", data=f"delnx:{pid}"),
             ]
         ]
-        try:
-            pending.message = await event.respond(text, buttons=buttons, reply_to=getattr(event, "id", None))
-        except Exception:
+        pending.message = await throttle.send_message(event, text, buttons=buttons, reply_to=getattr(event, "id", None))
+        if not pending.message:
             pending_deletions.pop(pid, None)
             return False
         try:
@@ -286,20 +277,14 @@ async def _ensure_disk_space(event, filename: str, file_size: int, path: str | N
         choice = pending.choice
         pending_deletions.pop(pid, None)
         if choice != "yes":
-            try:
-                if pending.message:
-                    await _safe_edit(pending.message, f"🛑 Cancelled: insufficient space for {filename}")
-            except Exception:
-                pass
+            if pending.message:
+                await _safe_edit(pending.message, f"🛑 Cancelled: insufficient space for {filename}")
             log.info("User declined deletion for %s", filename)
             return False
         with contextlib.suppress(OSError):
             os.remove(candidate)
-        try:
-            if pending.message:
-                await _safe_edit(pending.message, f"Deleted {cand_name}. Re-checking space...")
-        except Exception:
-            pass
+        if pending.message:
+            await _safe_edit(pending.message, f"Deleted {cand_name}. Re-checking space...")
         # loop continues to re-evaluate space
 
 
@@ -323,7 +308,7 @@ async def download_with_retries(
             retry += 1
             if retry > config.MAX_RETRY_ATTEMPTS:
                 return False
-            await msg.edit(f"Download stalled. Retrying ({retry}/{config.MAX_RETRY_ATTEMPTS})...")
+            await throttle.edit_message(msg, f"Download stalled. Retrying ({retry}/{config.MAX_RETRY_ATTEMPTS})...")
             await asyncio.sleep(2)
         except CancelledDownload:
             return False
@@ -365,14 +350,16 @@ async def run_download(
     if watcher_events:
         for wev in watcher_events:
             try:
-                mirror_msg = await wev.respond(
+                mirror_msg = await throttle.send_message(
+                    wev,
                     f"Starting download of {state.filename}...",
                     reply_to=getattr(wev, "id", None),
                     buttons=build_buttons(state),
                 )
-                sender = await wev.get_sender()
-                user_id = getattr(sender, "id", None)
-                message_tracker.register_message(filename, mirror_msg, MessageType.PROGRESS, user_id)
+                if mirror_msg:
+                    sender = await wev.get_sender()
+                    user_id = getattr(sender, "id", None)
+                    message_tracker.register_message(filename, mirror_msg, MessageType.PROGRESS, user_id)
             except Exception:
                 pass
 
@@ -381,36 +368,26 @@ async def run_download(
 
     async def _patched_edit(text: str, **kwargs):  # pragma: no cover simple wrapper
         nonlocal _orig_edit
+        r = None
         try:
             r = await _orig_edit(text, **kwargs)
-        except MessageNotModifiedError:
-            r = None
-        except Exception:
-            # Primary message uneditable — send a replacement
-            r = None
-            try:
-                new_msg = await msg.respond(text, **kwargs)
+        except Exception as exc:
+            if type(exc).__name__ != "MessageNotModifiedError":
+                # Primary message uneditable — send a replacement
+                new_msg = await throttle.send_message(msg, text, **kwargs)
                 if new_msg:
                     state.message = new_msg
                     _orig_edit = new_msg.edit
                     r = new_msg
-            except Exception:
-                pass
         for tracked in message_tracker.get_messages(state.filename, MessageType.PROGRESS):
             if state.message and tracked.message.id == state.message.id:
                 continue
-            try:
-                await tracked.message.edit(text, **kwargs)
-            except MessageNotModifiedError:
-                pass
-            except Exception:
+            result = await throttle.edit_message(tracked.message, text, **kwargs)
+            if result is None:
                 # Mirror message uneditable — send a replacement in the same chat
-                try:
-                    new_mirror = await tracked.message.respond(text, **kwargs)
-                    if new_mirror:
-                        tracked.message = new_mirror
-                except Exception:
-                    pass
+                new_mirror = await throttle.send_message(tracked.message, text, **kwargs)
+                if new_mirror:
+                    tracked.message = new_mirror
         return r
 
     with contextlib.suppress(Exception):
@@ -444,7 +421,8 @@ def _init_state(filename: str, path: str, size: int, event: events.NewMessage.Ev
 
 async def _send_start_message(event: events.NewMessage.Event, state: DownloadState):
     start_text = f"Starting download of {state.filename}..."
-    msg = await event.respond(
+    msg = await throttle.send_message(
+        event,
         start_text,
         buttons=build_buttons(state),
         reply_to=getattr(event, "id", None),
@@ -581,23 +559,26 @@ async def _handle_active_duplicate(event, active_state: DownloadState, filename:
                 if active_state.original_event and _same_user(event, active_state.original_event)
                 else "⏳ Already being downloaded"
             )
-            msg = await event.respond(f"{base}: {filename}", reply_to=reply_target)
-            sender = await event.get_sender()
-            user_id = getattr(sender, "id", None)
-            message_tracker.register_message(filename, msg, MessageType.ALREADY_DOWNLOADING, user_id)
-            return
+            msg = await throttle.send_message(event, f"{base}: {filename}", reply_to=reply_target)
+            if msg:
+                sender = await event.get_sender()
+                user_id = getattr(sender, "id", None)
+                message_tracker.register_message(filename, msg, MessageType.ALREADY_DOWNLOADING, user_id)
+                return
         except Exception:
             pass  # fall through to creating mirror message
 
     # Progress message missing (deleted?) — create a new mirror with progress mirroring
     try:
-        mirror_msg = await event.respond(
+        mirror_msg = await throttle.send_message(
+            event,
             f"⏳ Already being downloaded: {filename}. You'll receive progress here.",
             reply_to=getattr(event, "id", None),
         )
-        sender = await event.get_sender()
-        user_id = getattr(sender, "id", None)
-        message_tracker.register_message(filename, mirror_msg, MessageType.PROGRESS, user_id)
+        if mirror_msg:
+            sender = await event.get_sender()
+            user_id = getattr(sender, "id", None)
+            message_tracker.register_message(filename, mirror_msg, MessageType.PROGRESS, user_id)
     except Exception:
         pass
 
@@ -609,16 +590,18 @@ async def _handle_queued_duplicate(event, queued_item: QueuedItem, filename: str
 
     if reply_target:
         try:
-            msg = await event.respond(
+            msg = await throttle.send_message(
+                event,
                 f"🕒 Already queued: {filename}",
                 reply_to=reply_target,
             )
-            sender = await event.get_sender()
-            user_id = getattr(sender, "id", None)
-            message_tracker.register_message(filename, msg, MessageType.ALREADY_QUEUED, user_id)
-            if not same:
-                queued_item.add_watcher(event)
-            return
+            if msg:
+                sender = await event.get_sender()
+                user_id = getattr(sender, "id", None)
+                message_tracker.register_message(filename, msg, MessageType.ALREADY_QUEUED, user_id)
+                if not same:
+                    queued_item.add_watcher(event)
+                return
         except Exception:
             pass  # recreate below
 
@@ -626,18 +609,20 @@ async def _handle_queued_duplicate(event, queued_item: QueuedItem, filename: str
         queued_item.file_id = get_file_id(filename)
 
     try:
-        msg = await event.respond(
+        msg = await throttle.send_message(
+            event,
             f"🕒 Queued: {filename}\nWaiting for free slot (limit {config.MAX_CONCURRENT_DOWNLOADS})",
             buttons=[[Button.inline("🛑 Cancel", data=f"qcancel:{queued_item.file_id}")]],
             reply_to=getattr(event, "id", None),
         )
-        if not queued_item.message:
-            queued_item.message = msg
-        sender = await event.get_sender()
-        user_id = getattr(sender, "id", None)
-        message_tracker.register_message(filename, msg, MessageType.QUEUED, user_id)
-        if not same:
-            queued_item.add_watcher(event)
+        if msg:
+            if not queued_item.message:
+                queued_item.message = msg
+            sender = await event.get_sender()
+            user_id = getattr(sender, "id", None)
+            message_tracker.register_message(filename, msg, MessageType.QUEUED, user_id)
+            if not same:
+                queued_item.add_watcher(event)
     except Exception:
         pass
 
@@ -648,15 +633,17 @@ async def _do_enqueue(client: TelegramClient, document, filename, size, path, ev
     qi = QueuedItem(filename, document, size, path, event, file_id=file_id)
     position = await queue.enqueue(qi)
     try:
-        msg = await event.respond(
+        msg = await throttle.send_message(
+            event,
             f"🕒 Queued #{position}: {filename}\nWaiting for free slot (limit {config.MAX_CONCURRENT_DOWNLOADS})",
             buttons=[[Button.inline("🛑 Cancel", data=f"qcancel:{file_id}")]],
             reply_to=getattr(event, "id", None),
         )
-        qi.message = msg
-        sender = await event.get_sender()
-        user_id = getattr(sender, "id", None)
-        message_tracker.register_message(filename, msg, MessageType.QUEUED, user_id)
+        if msg:
+            qi.message = msg
+            sender = await event.get_sender()
+            user_id = getattr(sender, "id", None)
+            message_tracker.register_message(filename, msg, MessageType.QUEUED, user_id)
     except Exception:
         pass
 
@@ -680,17 +667,17 @@ async def _start_direct_download(client: TelegramClient, event, document, filena
 
 def _register_download_handler(client: TelegramClient):
     @client.on(events.NewMessage(func=lambda e: e.is_private and e.document))
+    @throttle.serialized
     async def _download(event):
         sender = await event.get_sender()
         uid = getattr(sender, "id", None)
         uname = getattr(sender, "username", None)
         if not config.is_user_allowed(uid, uname):
-            with contextlib.suppress(Exception):
-                await event.respond("🛑 You are not authorized to use this bot.")
+            await throttle.send_message(event, "🛑 You are not authorized to use this bot.")
             return
         document = event.document
         if not utils.is_media_file(document):
-            await event.respond("⚠️ Only video and audio files are supported")
+            await throttle.send_message(event, "⚠️ Only video and audio files are supported")
             return
         _prune_stale_categories()
         original_filename = filename_for_document(document)
@@ -726,7 +713,7 @@ def _register_download_handler(client: TelegramClient):
                         Button.inline("📁 Other", data=f"cato:{file_id}"),
                     ]
                 ]
-                await event.respond(f"Select category for: {original_filename}", buttons=buttons)
+                await throttle.send_message(event, f"Select category for: {original_filename}", buttons=buttons)
                 return
             pre = await pre_checks(event, text=(event.raw_text or None))
             if not pre:
@@ -756,7 +743,7 @@ def _register_status_handler(client: TelegramClient):
     async def _status(event):
         sender = await event.get_sender()
         if not config.is_user_allowed(getattr(sender, "id", None), getattr(sender, "username", None)):
-            await event.respond("🛑 Not authorized.")
+            await throttle.send_message(event, "🛑 Not authorized.")
             return
         q = list(queue.items.keys())
         active = list(states.keys())
@@ -770,7 +757,7 @@ def _register_status_handler(client: TelegramClient):
         if q:
             parts.append("\nQueue:")
             parts.extend(f" {i + 1}. {fn}" for i, fn in enumerate(q[:15]))
-        await event.respond("\n".join(parts))
+        await throttle.send_message(event, "\n".join(parts))
 
 
 def _register_start_handler(client: TelegramClient):
@@ -782,19 +769,21 @@ def _register_start_handler(client: TelegramClient):
         "/queue - show detailed queued downloads list\n"
         "/files - browse and manage downloaded files\n"
         "/kodi - Kodi remote control\n"
+        "/restart_kodi - quit and restart Kodi\n"
         "/start - this help"
     )
 
     @client.on(events.NewMessage(func=lambda e: e.is_private and (e.raw_text or "").strip().lower() == "/start"))
+    @throttle.serialized
     async def _start(event):
         sender = await event.get_sender()
         if not config.is_user_allowed(getattr(sender, "id", None), getattr(sender, "username", None)):
-            await event.respond("🛑 Not authorized.")
+            await throttle.send_message(event, "🛑 Not authorized.")
             return
         warning = utils.memory_warning_message(config.MEMORY_WARNING_PERCENT)
         if warning:
-            await event.respond(warning)
-        await event.respond(HELP_TEXT)
+            await throttle.send_message(event, warning)
+        await throttle.send_message(event, HELP_TEXT)
 
 
 async def _register_bot_commands(client: TelegramClient):
@@ -810,6 +799,7 @@ async def _register_bot_commands(client: TelegramClient):
         BotCommand("queue", "Show queued downloads"),
         BotCommand("files", "Browse and manage files"),
         BotCommand("kodi", "Kodi remote control"),
+        BotCommand("restart_kodi", "Quit and restart Kodi"),
     ]
     with contextlib.suppress(Exception):
         await client(SetBotCommandsRequest(scope=BotCommandScopeDefault(), lang_code="", commands=commands))
@@ -831,43 +821,36 @@ def _register_pause_resume_cancel(client: TelegramClient):
         """Update the primary progress message with new buttons and status."""
         if not state.message:
             return
-        try:
-            if state.paused:
-                progress_text = state.get_progress_text() or "Paused"
-                content = f"{status_text}\nFile: {state.filename}\nStatus: {progress_text}"
-            else:
-                progress_text = state.get_progress_text()
-                content = (
-                    f"{status_text}\nFile: {state.filename}\n{progress_text}"
-                    if progress_text
-                    else f"{status_text}\nFile: {state.filename}"
-                )
-            buttons = build_buttons(state)
-            await state.message.edit(content, buttons=buttons)
-        except Exception as e:
-            log.debug("Failed to update progress message for %s: %s", state.filename, e)
+        if state.paused:
+            progress_text = state.get_progress_text() or "Paused"
+            content = f"{status_text}\nFile: {state.filename}\nStatus: {progress_text}"
+        else:
+            progress_text = state.get_progress_text()
+            content = (
+                f"{status_text}\nFile: {state.filename}\n{progress_text}"
+                if progress_text
+                else f"{status_text}\nFile: {state.filename}"
+            )
+        buttons = build_buttons(state)
+        await throttle.edit_message(state.message, content, buttons=buttons)
 
     async def _do_pause(st, event):
         if st.paused:
-            with contextlib.suppress(Exception):
-                await event.answer("Already paused", alert=False)
+            await throttle.answer_callback(event, "Already paused", alert=False)
             return
         st.mark_paused()
         await _update_progress_message(st, "⏸️ Paused")
         await _update_tracked_messages(st.filename, st)
-        with contextlib.suppress(Exception):
-            await event.answer("Paused")
+        await throttle.answer_callback(event, "Paused")
 
     async def _do_resume(st, event):
         if not st.paused:
-            with contextlib.suppress(Exception):
-                await event.answer("Not paused", alert=False)
+            await throttle.answer_callback(event, "Not paused", alert=False)
             return
         st.mark_resumed()
         await _update_progress_message(st, "▶️ Resuming...")
         await _update_tracked_messages(st.filename, st)
-        with contextlib.suppress(Exception):
-            await event.answer("Resuming")
+        await throttle.answer_callback(event, "Resuming")
 
     async def _do_cancel(st, event, *, from_list: bool = False):
         file_id = get_file_id(st.filename)
@@ -881,23 +864,20 @@ def _register_pause_resume_cancel(client: TelegramClient):
                 Button.inline("❌ No, Go Back", data=no_data),
             ]
         ]
-        with contextlib.suppress(Exception):
-            await event.edit(text, buttons=buttons)
-        with contextlib.suppress(Exception):
-            await event.answer()
+        await throttle.edit_message(event, text, buttons=buttons)
+        await throttle.answer_callback(event)
 
     @client.on(events.CallbackQuery(pattern=pattern))
+    @throttle.serialized
     async def _prc(event):
         action, file_id = event.data.decode().split(":", 1)
         filename = resolve_file_id(file_id)
         if not filename:
-            with contextlib.suppress(Exception):
-                await event.answer(_NOT_FOUND, alert=False)
+            await throttle.answer_callback(event, _NOT_FOUND, alert=False)
             return
         st = states.get(filename)
         if not st or st.cancelled:
-            with contextlib.suppress(Exception):
-                await event.answer(_NOT_FOUND, alert=False)
+            await throttle.answer_callback(event, _NOT_FOUND, alert=False)
             return
         if action == "pause":
             await _do_pause(st, event)
@@ -909,6 +889,7 @@ def _register_pause_resume_cancel(client: TelegramClient):
 
 def _register_cancel_confirm(client: TelegramClient):
     @client.on(events.CallbackQuery(pattern=b"c(y|n)l?:"))
+    @throttle.serialized
     async def _cancel_confirm(event):
         data = event.data.decode()
         colon_idx = data.index(":")
@@ -918,32 +899,26 @@ def _register_cancel_confirm(client: TelegramClient):
         confirmed = prefix.startswith("cy")
         filename = resolve_file_id(file_id)
         if not filename:
-            with contextlib.suppress(Exception):
-                await event.answer(_NOT_FOUND, alert=False)
+            await throttle.answer_callback(event, _NOT_FOUND, alert=False)
             return
         st = states.get(filename)
         if not st:
-            with contextlib.suppress(Exception):
-                await event.answer(_NOT_FOUND, alert=False)
+            await throttle.answer_callback(event, _NOT_FOUND, alert=False)
             return
         st.confirming_cancel = False
         if confirmed:
             st.mark_cancelled()
-            with contextlib.suppress(Exception):
-                await event.edit(f"🛑 Cancelling: {st.filename}", buttons=None)
+            await throttle.edit_message(event, f"🛑 Cancelling: {st.filename}", buttons=None)
             await _update_tracked_messages(filename, st)
-            with contextlib.suppress(Exception):
-                await event.answer("Cancelling")
+            await throttle.answer_callback(event, "Cancelling")
         elif from_list:
             if states:
                 text, buttons = build_downloads_list(states)
             else:
                 text = "📁 No active downloads"
                 buttons = [[Button.inline("🔄 Refresh", data="refresh_downloads")]]
-            with contextlib.suppress(Exception):
-                await event.edit(text, buttons=buttons)
-            with contextlib.suppress(Exception):
-                await event.answer()
+            await throttle.edit_message(event, text, buttons=buttons)
+            await throttle.answer_callback(event)
         else:
             status = get_status_text(st)
             progress_text = st.get_progress_text()
@@ -951,27 +926,24 @@ def _register_cancel_confirm(client: TelegramClient):
             if progress_text:
                 text += f"\n{progress_text}"
             buttons = build_buttons(st)
-            with contextlib.suppress(Exception):
-                await event.edit(text, buttons=buttons)
-            with contextlib.suppress(Exception):
-                await event.answer()
+            await throttle.edit_message(event, text, buttons=buttons)
+            await throttle.answer_callback(event)
 
 
 def _register_qcancel(client: TelegramClient):
     @client.on(events.CallbackQuery(pattern=b"l?qcancel:"))
+    @throttle.serialized
     async def _qcancel(event):
         data = event.data.decode()
         from_list = data.startswith("lqcancel:")
         file_id = data.split(":", 1)[1]
         filename = resolve_file_id(file_id)
         if not filename:
-            with contextlib.suppress(Exception):
-                await event.answer(_NOT_FOUND, alert=False)
+            await throttle.answer_callback(event, _NOT_FOUND, alert=False)
             return
         qi = queue.items.get(filename)
         if not (qi and not qi.cancelled):
-            with contextlib.suppress(Exception):
-                await event.answer(_NOT_FOUND, alert=False)
+            await throttle.answer_callback(event, _NOT_FOUND, alert=False)
             return
 
         text = f"⚠️ **Cancel this queued download?**\n\n{filename}"
@@ -983,14 +955,13 @@ def _register_qcancel(client: TelegramClient):
                 Button.inline("❌ No, Go Back", data=no_data),
             ]
         ]
-        with contextlib.suppress(Exception):
-            await event.edit(text, buttons=buttons)
-        with contextlib.suppress(Exception):
-            await event.answer()
+        await throttle.edit_message(event, text, buttons=buttons)
+        await throttle.answer_callback(event)
 
 
 def _register_qcancel_confirm(client: TelegramClient):
     @client.on(events.CallbackQuery(pattern=b"qc(y|n)l?:"))
+    @throttle.serialized
     async def _qcancel_confirm(event):
         data = event.data.decode()
         colon_idx = data.index(":")
@@ -1000,56 +971,49 @@ def _register_qcancel_confirm(client: TelegramClient):
         confirmed = prefix.startswith("qcy")
         filename = resolve_file_id(file_id)
         if not filename:
-            with contextlib.suppress(Exception):
-                await event.answer(_NOT_FOUND, alert=False)
+            await throttle.answer_callback(event, _NOT_FOUND, alert=False)
             return
 
         if confirmed:
             qi = queue.items.get(filename)
             if not (qi and not qi.cancelled):
-                with contextlib.suppress(Exception):
-                    await event.answer(_NOT_FOUND, alert=False)
+                await throttle.answer_callback(event, _NOT_FOUND, alert=False)
                 return
 
             for tracked in message_tracker.get_messages(filename):
                 if tracked.message_type in (MessageType.PROGRESS, MessageType.QUEUED):
-                    with contextlib.suppress(Exception):
-                        await tracked.message.edit(
-                            f"🛑 Cancelled: {filename}\nThis download was cancelled from the queue.",
-                            buttons=None,
-                        )
+                    await throttle.edit_message(
+                        tracked.message,
+                        f"🛑 Cancelled: {filename}\nThis download was cancelled from the queue.",
+                        buttons=None,
+                    )
 
             list_messages = message_tracker.get_all_list_messages()
             queue.cancel(filename)
 
             for tracked in list_messages:
                 if tracked.message_type == MessageType.QUEUE_LIST:
-                    try:
-                        if queue.items:
-                            text, buttons = build_queue_list(queue.items)
-                            await tracked.message.edit(text, buttons=buttons)
-                        else:
-                            await tracked.message.edit(
-                                "📝 No queued downloads",
-                                buttons=[[Button.inline("🔄 Refresh", data="refresh_queue")]],
-                            )
-                    except Exception:
-                        pass
+                    if queue.items:
+                        text, buttons = build_queue_list(queue.items)
+                        await throttle.edit_message(tracked.message, text, buttons=buttons)
+                    else:
+                        await throttle.edit_message(
+                            tracked.message,
+                            "📝 No queued downloads",
+                            buttons=[[Button.inline("🔄 Refresh", data="refresh_queue")]],
+                        )
 
             message_tracker.cleanup_file(filename)
             file_id_map.pop(file_id, None)
-            with contextlib.suppress(Exception):
-                await event.answer("Cancelled")
+            await throttle.answer_callback(event, "Cancelled")
         elif from_list:
             if queue.items:
                 text, buttons = build_queue_list(queue.items)
             else:
                 text = "📝 No queued downloads"
                 buttons = [[Button.inline("🔄 Refresh", data="refresh_queue")]]
-            with contextlib.suppress(Exception):
-                await event.edit(text, buttons=buttons)
-            with contextlib.suppress(Exception):
-                await event.answer()
+            await throttle.edit_message(event, text, buttons=buttons)
+            await throttle.answer_callback(event)
         else:
             qi = queue.items.get(filename)
             if qi and qi.file_id:
@@ -1058,72 +1022,63 @@ def _register_qcancel_confirm(client: TelegramClient):
             else:
                 text = _NOT_FOUND
                 buttons = None
-            with contextlib.suppress(Exception):
-                await event.edit(text, buttons=buttons)
-            with contextlib.suppress(Exception):
-                await event.answer()
+            await throttle.edit_message(event, text, buttons=buttons)
+            await throttle.answer_callback(event)
 
 
 def _register_deletion_callbacks(client: TelegramClient):
     pattern = b"del(ok|nx):"
 
     @client.on(events.CallbackQuery(pattern=pattern))
+    @throttle.serialized
     async def _del(event):
         data = event.data.decode()
         action, pid = data.split(":", 1)
         pending = pending_deletions.get(pid)
         if not pending:
-            with contextlib.suppress(Exception):
-                await event.answer(_NOT_FOUND, alert=False)
+            await throttle.answer_callback(event, _NOT_FOUND, alert=False)
             return
         if pending.future.done():
-            with contextlib.suppress(Exception):
-                await event.answer("Already processed", alert=False)
+            await throttle.answer_callback(event, "Already processed", alert=False)
             return
         if action == "delok":
             pending.choice = "yes"
-            with contextlib.suppress(Exception):
-                await event.answer("Deleting", alert=False)
+            await throttle.answer_callback(event, "Deleting", alert=False)
         else:
             pending.choice = "no"
-            with contextlib.suppress(Exception):
-                await event.answer("Cancelled", alert=False)
+            await throttle.answer_callback(event, "Cancelled", alert=False)
         with contextlib.suppress(Exception):
             pending.future.set_result(True)
 
 
 def _register_category_selection(client: TelegramClient):
     @client.on(events.CallbackQuery(pattern=b"cat[mso]:"))
+    @throttle.serialized
     async def _cat(event):
         data = event.data.decode()
         prefix, file_id = data.split(":", 1)
         filename = resolve_file_id(file_id)
         if not filename:
-            with contextlib.suppress(Exception):
-                await event.answer(_NOT_FOUND, alert=False)
+            await throttle.answer_callback(event, _NOT_FOUND, alert=False)
             return
         pending = _pending_categories.pop(file_id, None)
         if not pending:
-            with contextlib.suppress(Exception):
-                await event.answer("Selection expired", alert=False)
+            await throttle.answer_callback(event, "Selection expired", alert=False)
             return
         document, orig_event, size, _ts = pending
         forced = {"catm": "movie", "cats": "series", "cato": "other"}.get(prefix)
         if not forced:
-            with contextlib.suppress(Exception):
-                await event.answer("Unknown", alert=False)
+            await throttle.answer_callback(event, "Unknown", alert=False)
             return
         path, final_name = build_final_path(filename, forced_category=forced)
         direct_download = None
         async with _download_lock:
             if states.get(final_name) or queue.items.get(final_name):
-                with contextlib.suppress(Exception):
-                    await event.answer("Already queued", alert=False)
+                await throttle.answer_callback(event, "Already queued", alert=False)
                 return
             if queue.is_saturated():
                 await _do_enqueue(client, document, final_name, size, path, orig_event)
-                with contextlib.suppress(Exception):
-                    await event.answer("Queued", alert=False)
+                await throttle.answer_callback(event, "Queued", alert=False)
                 return
             # Pre-register state so duplicates are detected after lock release
             register_file_id(final_name)
@@ -1133,8 +1088,7 @@ def _register_category_selection(client: TelegramClient):
         if direct_download:
             document, final_name, size, path = direct_download
             await _start_direct_download(client, orig_event, document, final_name, size, path)
-        with contextlib.suppress(Exception):
-            await event.answer("Started", alert=False)
+        await throttle.answer_callback(event, "Started", alert=False)
 
 
 __all__ = [

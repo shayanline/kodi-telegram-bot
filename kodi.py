@@ -1,14 +1,22 @@
-"""Thin async helper layer for interacting with Kodi JSON-RPC."""
+"""Thin async helper layer for interacting with Kodi JSON-RPC.
+
+All calls are serialized through an internal FIFO queue to prevent
+overwhelming Kodi (especially on low-power hardware like Raspberry Pi)
+and to ensure every command executes in order.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 import requests
 
 import config
 from logger import log
+
+_RPC_MIN_INTERVAL = 0.05  # 50ms between consecutive Kodi calls
 
 
 def _rpc_sync(method: str, params: dict[str, Any] | None = None) -> dict[str, Any] | None:
@@ -30,8 +38,55 @@ def _rpc_sync(method: str, params: dict[str, Any] | None = None) -> dict[str, An
         return None
 
 
+# ── RPC Queue ──
+
+
+class _RpcQueue:
+    """Async FIFO queue that serializes all Kodi JSON-RPC calls."""
+
+    def __init__(self, min_interval: float = _RPC_MIN_INTERVAL):
+        self._queue: asyncio.Queue[tuple[str, dict[str, Any] | None, asyncio.Future[dict[str, Any] | None]]] = (
+            asyncio.Queue()
+        )
+        self._task: asyncio.Task[None] | None = None
+        self._min_interval = min_interval
+        self._last_call = 0.0
+
+    async def submit(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        """Submit an RPC call and await its result."""
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[dict[str, Any] | None] = loop.create_future()
+        await self._queue.put((method, params, future))
+        self._ensure_worker()
+        return await future
+
+    def _ensure_worker(self) -> None:
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(self._worker())
+
+    async def _worker(self) -> None:
+        while not self._queue.empty():
+            method, params, future = await self._queue.get()
+            wait = self._min_interval - (time.monotonic() - self._last_call)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            try:
+                result = await asyncio.to_thread(_rpc_sync, method, params)
+                if not future.done():
+                    future.set_result(result)
+            except Exception as e:
+                if not future.done():
+                    future.set_exception(e)
+            finally:
+                self._last_call = time.monotonic()
+            self._queue.task_done()
+
+
+_rpc_queue = _RpcQueue()
+
+
 async def _rpc(method: str, params: dict[str, Any] | None = None) -> dict[str, Any] | None:
-    return await asyncio.to_thread(_rpc_sync, method, params)
+    return await _rpc_queue.submit(method, params)
 
 
 async def notify(title: str, message: str) -> None:
@@ -48,6 +103,11 @@ async def quit_kodi() -> None:
     """Send Application.Quit to shut down Kodi."""
     log.info("Sending Application.Quit")
     await _rpc("Application.Quit")
+
+
+async def is_alive() -> bool:
+    """Return True if Kodi responds to a JSON-RPC ping."""
+    return await _rpc("JSONRPC.Ping") is not None
 
 
 async def is_playing() -> bool:
@@ -145,6 +205,8 @@ async def input_command(name: str) -> None:
 
 
 __all__ = [
+    "_RpcQueue",
+    "_rpc_queue",
     "get_active_player_id",
     "get_now_playing",
     "get_player_info",
@@ -152,6 +214,7 @@ __all__ = [
     "go_next",
     "go_previous",
     "input_command",
+    "is_alive",
     "is_playing",
     "notify",
     "play",

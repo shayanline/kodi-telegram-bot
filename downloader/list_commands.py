@@ -3,11 +3,10 @@ from __future__ import annotations
 import contextlib
 
 from telethon import Button, TelegramClient, events
-from telethon.errors import MessageNotModifiedError
 
 import config
+import throttle
 import utils
-from logger import log
 
 from .buttons import build_buttons
 from .ids import get_file_id
@@ -29,26 +28,27 @@ def _register_downloads_handler(client: TelegramClient):
             func=lambda e: e.is_private and not e.document and (e.raw_text or "").strip().lower() == "/downloads"
         )
     )
+    @throttle.serialized
     async def _downloads(event):
         sender = await event.get_sender()
         user_id = getattr(sender, "id", None)
         username = getattr(sender, "username", None)
 
         if not config.is_user_allowed(user_id, username):
-            await event.respond("🛑 Not authorized.")
+            await throttle.send_message(event, "🛑 Not authorized.")
             return
 
         warning = utils.memory_warning_message(config.MEMORY_WARNING_PERCENT)
         if warning:
-            await event.respond(warning)
+            await throttle.send_message(event, warning)
 
         if not states:
             text = "📁 No active downloads"
             buttons = [[Button.inline("🔄 Refresh", data="refresh_downloads")]]
-            msg = await event.respond(text, buttons=buttons)
+            msg = await throttle.send_message(event, text, buttons=buttons)
         else:
             text, buttons = build_downloads_list(states)
-            msg = await event.respond(text, buttons=buttons)
+            msg = await throttle.send_message(event, text, buttons=buttons)
 
         message_tracker.register_message("__downloads_list__", msg, MessageType.DOWNLOAD_LIST, user_id)
         message_tracker.trim_list_messages("__downloads_list__")
@@ -62,26 +62,27 @@ def _register_queue_handler(client: TelegramClient):
             func=lambda e: e.is_private and not e.document and (e.raw_text or "").strip().lower() == "/queue"
         )
     )
+    @throttle.serialized
     async def _queue_list(event):
         sender = await event.get_sender()
         user_id = getattr(sender, "id", None)
         username = getattr(sender, "username", None)
 
         if not config.is_user_allowed(user_id, username):
-            await event.respond("🛑 Not authorized.")
+            await throttle.send_message(event, "🛑 Not authorized.")
             return
 
         warning = utils.memory_warning_message(config.MEMORY_WARNING_PERCENT)
         if warning:
-            await event.respond(warning)
+            await throttle.send_message(event, warning)
 
         if not queue.items:
             text = "📝 No queued downloads"
             buttons = [[Button.inline("🔄 Refresh", data="refresh_queue")]]
-            msg = await event.respond(text, buttons=buttons)
+            msg = await throttle.send_message(event, text, buttons=buttons)
         else:
             text, buttons = build_queue_list(queue.items)
-            msg = await event.respond(text, buttons=buttons)
+            msg = await throttle.send_message(event, text, buttons=buttons)
 
         message_tracker.register_message("__queue_list__", msg, MessageType.QUEUE_LIST, user_id)
         message_tracker.trim_list_messages("__queue_list__")
@@ -91,40 +92,33 @@ def _register_queue_handler(client: TelegramClient):
 
 def _register_list_callbacks(client: TelegramClient):
     @client.on(events.CallbackQuery(pattern=b"refresh_downloads"))
+    @throttle.serialized
     async def _refresh_downloads(event):
-        try:
-            if not states:
-                text = "📁 No active downloads"
-                buttons = [[Button.inline("🔄 Refresh", data="refresh_downloads")]]
-                await event.edit(text, buttons=buttons)
-            else:
-                text, buttons = build_downloads_list(states)
-                await event.edit(text, buttons=buttons)
-        except MessageNotModifiedError:
-            pass
-        except Exception as e:
-            log.debug("Failed to refresh downloads list: %s", e)
+        if not states:
+            text = "📁 No active downloads"
+            buttons = [[Button.inline("🔄 Refresh", data="refresh_downloads")]]
+            await throttle.edit_message(event, text, buttons=buttons)
+        else:
+            text, buttons = build_downloads_list(states)
+            await throttle.edit_message(event, text, buttons=buttons)
 
-        await event.answer("Refreshed")
+        await throttle.answer_callback(event, "Refreshed")
 
     @client.on(events.CallbackQuery(pattern=b"refresh_queue"))
+    @throttle.serialized
     async def _refresh_queue(event):
-        try:
-            if not queue.items:
-                text = "📝 No queued downloads"
-                buttons = [[Button.inline("🔄 Refresh", data="refresh_queue")]]
-                await event.edit(text, buttons=buttons)
-            else:
-                text, buttons = build_queue_list(queue.items)
-                await event.edit(text, buttons=buttons)
-        except MessageNotModifiedError:
-            pass
-        except Exception as e:
-            log.debug("Failed to refresh queue list: %s", e)
+        if not queue.items:
+            text = "📝 No queued downloads"
+            buttons = [[Button.inline("🔄 Refresh", data="refresh_queue")]]
+            await throttle.edit_message(event, text, buttons=buttons)
+        else:
+            text, buttons = build_queue_list(queue.items)
+            await throttle.edit_message(event, text, buttons=buttons)
 
-        await event.answer("Refreshed")
+        await throttle.answer_callback(event, "Refreshed")
 
     @client.on(events.CallbackQuery(pattern=b"info:"))
+    @throttle.serialized
     async def _info(event):
         await _handle_info_callback(event)
 
@@ -134,12 +128,12 @@ async def _handle_info_callback(event):
     file_id = event.data.decode().split(":", 1)[1]
     filename = resolve_file_id(file_id)
     if not filename:
-        await event.answer("Download completed or no longer active", alert=False)
+        await throttle.answer_callback(event, "Download completed or no longer active", alert=False)
         return
 
     state = states.get(filename)
     if not state:
-        await event.answer("Download completed or no longer active", alert=False)
+        await throttle.answer_callback(event, "Download completed or no longer active", alert=False)
         return
 
     await _create_info_message(event, filename, state)
@@ -154,13 +148,12 @@ async def _create_info_message(event, filename, state):
     text = f"{status}: {filename}"
     buttons = build_buttons(state)
 
-    try:
-        msg = await event.respond(text, buttons=buttons)
+    msg = await throttle.send_message(event, text, buttons=buttons)
+    if msg:
         message_tracker.register_message(filename, msg, MessageType.PROGRESS, user_id)
-        await event.answer("Created progress view")
-    except Exception as e:
-        log.debug("Failed to create info message: %s", e)
-        await event.answer("Failed to create progress view", alert=True)
+        await throttle.answer_callback(event, "Created progress view")
+    else:
+        await throttle.answer_callback(event, "Failed to create progress view", alert=True)
 
 
 def get_status_text(state):
@@ -239,8 +232,9 @@ def handle_existing_lists_for_new_download(filename: str):
 
 def _register_noop_handler(client: TelegramClient):
     @client.on(events.CallbackQuery(pattern=b"no_action"))
+    @throttle.serialized
     async def _noop(event):
-        await event.answer()
+        await throttle.answer_callback(event)
 
 
 __all__ = [

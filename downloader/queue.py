@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from telethon import TelegramClient
 
 import config
+import throttle
 
 
 class RunnerFunc(Protocol):
@@ -156,17 +156,13 @@ class DownloadQueue:
                         return
                     await self._runner(client, qi)
             except Exception:
-                with contextlib.suppress(Exception):
-                    await qi.event.respond(f"❌ Failed: {qi.filename}")
+                await throttle.send_message(qi.event, f"❌ Failed: {qi.filename}")
 
     async def _cleanup_remaining(self):
         for qi in self.items.values():
             qi.cancelled = True
-            try:
-                if qi.message:
-                    await qi.message.edit(f"🛑 Cancelled (shutdown): {qi.filename}")
-            except Exception:
-                pass
+            if qi.message:
+                await throttle.edit_message(qi.message, f"🛑 Cancelled (shutdown): {qi.filename}")
         self.items.clear()
 
     async def _renumber(self):  # pragma: no cover - UI side-effects
@@ -186,16 +182,14 @@ class DownloadQueue:
             for idx, qi in enumerate(snapshot, start=1):
                 if not qi.message or qi.cancelled:
                     continue
-                try:
-                    buttons = None
-                    if button_cls and qi.file_id:
-                        buttons = [[button_cls.inline("🛑 Cancel", data=f"qcancel:{qi.file_id}")]]
-                    await qi.message.edit(
-                        f"🕒 Queued #{idx}: {qi.filename}\nWaiting for free slot (limit {self.limit})",
-                        buttons=buttons,
-                    )
-                except Exception:
-                    pass
+                buttons = None
+                if button_cls and qi.file_id:
+                    buttons = [[button_cls.inline("🛑 Cancel", data=f"qcancel:{qi.file_id}")]]
+                await throttle.edit_message(
+                    qi.message,
+                    f"🕒 Queued #{idx}: {qi.filename}\nWaiting for free slot (limit {self.limit})",
+                    buttons=buttons,
+                )
 
 
 queue = DownloadQueue(config.MAX_CONCURRENT_DOWNLOADS)

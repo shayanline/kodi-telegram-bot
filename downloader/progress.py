@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import time
 
 import config
 import kodi
+import throttle
 import utils
 
 from .buttons import build_buttons
@@ -56,14 +56,14 @@ def create_progress_callback(filename: str, start: float, rate: RateLimiter, msg
 
     async def send_tg_update(percent: int, received: int, total: int, speed: str):
         bar = "▓" * (percent // 10) + "░" * (10 - percent // 10)
-        with contextlib.suppress(Exception):
-            await msg.edit(
-                f"Downloading: {filename}\n"
-                f"Progress: {bar} {percent}%\n"
-                f"Size: {utils.humanize_size(received)}/{utils.humanize_size(total)}\n"
-                f"Speed: {speed}/s",
-                **_build_edit_kwargs(),
-            )
+        await throttle.edit_message(
+            msg,
+            f"Downloading: {filename}\n"
+            f"Progress: {bar} {percent}%\n"
+            f"Size: {utils.humanize_size(received)}/{utils.humanize_size(total)}\n"
+            f"Speed: {speed}/s",
+            **_build_edit_kwargs(),
+        )
         await maybe_warn_memory()
 
     async def progress(received: int, total: int):

@@ -216,3 +216,86 @@ def test_input_command_invalid(monkeypatch):
     monkeypatch.setattr(kodi, "_rpc", fake_rpc)
     asyncio.run(kodi.input_command("InvalidCommand"))
     assert len(seen) == 0
+
+
+# ── _rpc_sync non-200 ──
+
+
+def test_rpc_sync_non_200(monkeypatch):
+    class Resp:
+        status_code = 500
+
+    monkeypatch.setattr(kodi, "requests", type("R", (), {"post": staticmethod(lambda *a, **k: Resp())}))
+    assert kodi._rpc_sync("Test.Method") is None
+
+
+# ── is_alive ──
+
+
+def test_is_alive_true(monkeypatch):
+    async def fake_rpc(method, params=None):
+        return {"result": "pong"}
+
+    monkeypatch.setattr(kodi, "_rpc", fake_rpc)
+    assert asyncio.run(kodi.is_alive()) is True
+
+
+def test_is_alive_false(monkeypatch):
+    async def fake_rpc(method, params=None):
+        return None
+
+    monkeypatch.setattr(kodi, "_rpc", fake_rpc)
+    assert asyncio.run(kodi.is_alive()) is False
+
+
+# ── quit_kodi ──
+
+
+def test_quit_kodi(monkeypatch):
+    seen = []
+
+    async def fake_rpc(method, params=None):
+        seen.append(method)
+        return {"result": "OK"}
+
+    monkeypatch.setattr(kodi, "_rpc", fake_rpc)
+    asyncio.run(kodi.quit_kodi())
+    assert "Application.Quit" in seen
+
+
+# ── RPC Queue ──
+
+
+def test_rpc_queue_serializes(monkeypatch):
+    results = []
+
+    def fake_sync(method, params=None):
+        results.append(method)
+        return {"result": "OK"}
+
+    monkeypatch.setattr(kodi, "_rpc_sync", fake_sync)
+
+    async def _run():
+        q = kodi._RpcQueue(min_interval=0)
+        r1, r2 = await asyncio.gather(q.submit("A"), q.submit("B"))
+        assert r1 == {"result": "OK"}
+        assert r2 == {"result": "OK"}
+
+    asyncio.run(_run())
+    assert len(results) == 2
+
+
+def test_rpc_queue_worker_exception(monkeypatch):
+    import pytest
+
+    def exploding(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(kodi, "_rpc_sync", exploding)
+
+    async def _run():
+        q = kodi._RpcQueue(min_interval=0)
+        with pytest.raises(RuntimeError, match="boom"):
+            await q.submit("Bad.Method")
+
+    asyncio.run(_run())

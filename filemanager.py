@@ -14,9 +14,9 @@ import shutil
 from datetime import UTC, datetime
 
 from telethon import Button, TelegramClient, events
-from telethon.errors import MessageNotModifiedError
 
 import config
+import throttle
 import utils
 from downloader.queue import queue
 from downloader.state import states
@@ -384,12 +384,6 @@ def _do_delete(abspath: str) -> bool:
         return False
 
 
-async def _safe_edit(event, text: str, buttons) -> None:
-    """Edit a callback query message, suppressing no-change errors."""
-    with contextlib.suppress(MessageNotModifiedError):
-        await event.edit(text, buttons=buttons, parse_mode="md")
-
-
 # ── Handler registration ──
 
 
@@ -405,28 +399,31 @@ def _register_files_command(client: TelegramClient) -> None:
             func=lambda e: e.is_private and not e.document and (e.raw_text or "").strip().lower() == "/files"
         )
     )
+    @throttle.serialized
     async def _files(event):
         sender = await event.get_sender()
         if not config.is_user_allowed(getattr(sender, "id", None), getattr(sender, "username", None)):
-            await event.respond("🛑 Not authorized.")
+            await throttle.send_message(event, "🛑 Not authorized.")
             return
         warning = utils.memory_warning_message(config.MEMORY_WARNING_PERCENT)
         if warning:
-            await event.respond(warning)
+            await throttle.send_message(event, warning)
         text, buttons = _render_root()
-        await event.respond(text, buttons=buttons, parse_mode="md")
+        await throttle.send_message(event, text, buttons=buttons, parse_mode="md")
 
 
 def _register_callbacks(client: TelegramClient) -> None:
     @client.on(events.CallbackQuery(pattern=rb"f:r:(\d+):([SND])"))
+    @throttle.serialized
     async def _root(event):
         page = int(event.pattern_match.group(1).decode())
         sort = event.pattern_match.group(2).decode()
         text, buttons = _render_root(page, sort)
-        await _safe_edit(event, text, buttons)
-        await event.answer()
+        await throttle.edit_message(event, text, buttons=buttons, parse_mode="md")
+        await throttle.answer_callback(event)
 
     @client.on(events.CallbackQuery(pattern=rb"f:n:([a-f0-9]{8}):(\d+):([SND])"))
+    @throttle.serialized
     async def _navigate(event):
         match = event.pattern_match
         pid = match.group(1).decode()
@@ -434,82 +431,86 @@ def _register_callbacks(client: TelegramClient) -> None:
         sort = match.group(3).decode()
         abspath = _resolve(pid)
         if not abspath or not os.path.isdir(abspath):
-            await event.answer(_EXPIRED, alert=True)
+            await throttle.answer_callback(event, _EXPIRED, alert=True)
             return
         relpath = _path_registry[pid]
         text, buttons = _render_dir(relpath, page, sort)
-        await _safe_edit(event, text, buttons)
-        await event.answer()
+        await throttle.edit_message(event, text, buttons=buttons, parse_mode="md")
+        await throttle.answer_callback(event)
 
     @client.on(events.CallbackQuery(pattern=rb"f:i:([a-f0-9]{8}):([SND])"))
+    @throttle.serialized
     async def _file_info(event):
         pid = event.pattern_match.group(1).decode()
         sort = event.pattern_match.group(2).decode()
         abspath = _resolve(pid)
         if not abspath or not os.path.exists(abspath):
-            await event.answer(_EXPIRED, alert=True)
+            await throttle.answer_callback(event, _EXPIRED, alert=True)
             return
         relpath = _path_registry[pid]
         if os.path.isdir(abspath):
             text, buttons = _render_dir(relpath, 1, sort)
         else:
             text, buttons = _render_file(relpath, sort)
-        await _safe_edit(event, text, buttons)
-        await event.answer()
+        await throttle.edit_message(event, text, buttons=buttons, parse_mode="md")
+        await throttle.answer_callback(event)
 
     @client.on(events.CallbackQuery(pattern=rb"f:d:([a-f0-9]{8}):([SND])"))
+    @throttle.serialized
     async def _delete_prompt(event):
         pid = event.pattern_match.group(1).decode()
         sort = event.pattern_match.group(2).decode()
         abspath = _resolve(pid)
         if not abspath or not os.path.exists(abspath):
-            await event.answer(_EXPIRED, alert=True)
+            await throttle.answer_callback(event, _EXPIRED, alert=True)
             return
         if _is_protected_recursive(abspath):
-            await event.answer("🔒 Cannot delete — active download", alert=True)
+            await throttle.answer_callback(event, "🔒 Cannot delete — active download", alert=True)
             return
         relpath = _path_registry[pid]
         text, buttons = _render_delete_confirm(relpath, sort)
-        await _safe_edit(event, text, buttons)
-        await event.answer()
+        await throttle.edit_message(event, text, buttons=buttons, parse_mode="md")
+        await throttle.answer_callback(event)
 
     @client.on(events.CallbackQuery(pattern=rb"f:y:([a-f0-9]{8}):([SND])"))
+    @throttle.serialized
     async def _delete_confirm(event):
         pid = event.pattern_match.group(1).decode()
         sort = event.pattern_match.group(2).decode()
         abspath = _resolve(pid)
         if not abspath or not os.path.exists(abspath):
-            await event.answer("Already deleted or not found", alert=True)
+            await throttle.answer_callback(event, "Already deleted or not found", alert=True)
             text, buttons = _render_root(sort=sort)
-            await _safe_edit(event, text, buttons)
+            await throttle.edit_message(event, text, buttons=buttons, parse_mode="md")
             return
         if _is_protected_recursive(abspath):
-            await event.answer("🔒 Cannot delete — active download", alert=True)
+            await throttle.answer_callback(event, "🔒 Cannot delete — active download", alert=True)
             return
         relpath = _path_registry[pid]
         name = os.path.basename(abspath)
         success = _do_delete(abspath)
         if success:
-            await event.answer(f"Deleted: {name}")
+            await throttle.answer_callback(event, f"Deleted: {name}")
             log.info("File manager deleted: %s", relpath)
         else:
-            await event.answer(f"Failed to delete: {name}", alert=True)
+            await throttle.answer_callback(event, f"Failed to delete: {name}", alert=True)
         parent_rel = os.path.dirname(relpath)
         if parent_rel:
             text, buttons = _render_dir(parent_rel, 1, sort)
         else:
             text, buttons = _render_root(sort=sort)
-        await _safe_edit(event, text, buttons)
+        await throttle.edit_message(event, text, buttons=buttons, parse_mode="md")
 
     @client.on(events.CallbackQuery(pattern=rb"f:x:([a-f0-9]{8}):([SND])"))
+    @throttle.serialized
     async def _delete_cancel(event):
         pid = event.pattern_match.group(1).decode()
         sort = event.pattern_match.group(2).decode()
         abspath = _resolve(pid)
         if not abspath:
-            await event.answer(_EXPIRED, alert=True)
+            await throttle.answer_callback(event, _EXPIRED, alert=True)
             text, buttons = _render_root(sort=sort)
-            await _safe_edit(event, text, buttons)
+            await throttle.edit_message(event, text, buttons=buttons, parse_mode="md")
             return
         relpath = _path_registry[pid]
         if os.path.isfile(abspath):
@@ -522,12 +523,13 @@ def _register_callbacks(client: TelegramClient) -> None:
                 text, buttons = _render_dir(parent_rel, 1, sort)
             else:
                 text, buttons = _render_root(sort=sort)
-        await _safe_edit(event, text, buttons)
-        await event.answer()
+        await throttle.edit_message(event, text, buttons=buttons, parse_mode="md")
+        await throttle.answer_callback(event)
 
     @client.on(events.CallbackQuery(pattern=b"f:noop"))
+    @throttle.serialized
     async def _noop(event):
-        await event.answer()
+        await throttle.answer_callback(event)
 
 
 __all__ = ["register_filemanager"]

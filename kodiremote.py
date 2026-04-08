@@ -11,10 +11,10 @@ import contextlib
 from typing import Any
 
 from telethon import Button, TelegramClient, events
-from telethon.errors import MessageNotModifiedError
 
 import config
 import kodi
+import throttle
 from logger import log
 
 _VOL_STEP = 5
@@ -144,28 +144,23 @@ def _render_navigation() -> tuple[str, list[list[Button]]]:
 # ── Helpers ──
 
 
-async def _safe_edit(event, text: str, buttons) -> None:
-    with contextlib.suppress(MessageNotModifiedError):
-        await event.edit(text, buttons=buttons, parse_mode="md")
-
-
 async def _refresh_playback(event) -> None:
     """Fetch state and update the message to playback view."""
     state = await _fetch_playback_state()
     text, buttons = _render_playback(state)
-    await _safe_edit(event, text, buttons)
+    await throttle.edit_message(event, text, buttons=buttons, parse_mode="md")
 
 
 async def _player_action(event, action) -> None:
     """Run a player action then refresh the playback view."""
     pid = await kodi.get_active_player_id()
     if pid is None:
-        await event.answer("Nothing playing", alert=False)
+        await throttle.answer_callback(event, "Nothing playing", alert=False)
         await _refresh_playback(event)
         return
     await action(pid)
     await _refresh_playback(event)
-    await event.answer()
+    await throttle.answer_callback(event)
 
 
 # ── Callback dispatch ──
@@ -199,18 +194,20 @@ def _register_command(client: TelegramClient) -> None:
             func=lambda e: e.is_private and not e.document and (e.raw_text or "").strip().lower() == "/kodi"
         )
     )
+    @throttle.serialized
     async def _kodi_cmd(event):
         sender = await event.get_sender()
         if not config.is_user_allowed(getattr(sender, "id", None), getattr(sender, "username", None)):
-            await event.respond("🛑 Not authorized.")
+            await throttle.send_message(event, "🛑 Not authorized.")
             return
         state = await _fetch_playback_state()
         text, buttons = _render_playback(state)
-        await event.respond(text, buttons=buttons, parse_mode="md")
+        await throttle.send_message(event, text, buttons=buttons, parse_mode="md")
 
 
 def _register_callbacks(client: TelegramClient) -> None:
     @client.on(events.CallbackQuery(pattern=rb"k:[a-z]{2}"))
+    @throttle.serialized
     async def _kodi_cb(event):
         data = event.data
         # Playback actions
@@ -231,45 +228,44 @@ def _register_callbacks(client: TelegramClient) -> None:
             vol, _ = await kodi.get_volume()
             await kodi.set_volume(min(100, vol + _VOL_STEP))
             await _refresh_playback(event)
-            await event.answer()
+            await throttle.answer_callback(event)
         elif data == b"k:vd":
             vol, _ = await kodi.get_volume()
             await kodi.set_volume(max(0, vol - _VOL_STEP))
             await _refresh_playback(event)
-            await event.answer()
+            await throttle.answer_callback(event)
         elif data == b"k:mu":
             await kodi.toggle_mute()
             await _refresh_playback(event)
-            await event.answer()
+            await throttle.answer_callback(event)
         # View switching
         elif data == b"k:nv":
             text, buttons = _render_navigation()
-            await _safe_edit(event, text, buttons)
-            await event.answer()
+            await throttle.edit_message(event, text, buttons=buttons, parse_mode="md")
+            await throttle.answer_callback(event)
         elif data == b"k:pb":
             await _refresh_playback(event)
-            await event.answer()
+            await throttle.answer_callback(event)
         # Refresh
         elif data == b"k:rf":
             try:
-                # Detect which view we're in by checking message text
                 msg = await event.get_message()
                 is_nav = msg and "Navigation" in (msg.text or "")
             except Exception:
                 is_nav = False
             if is_nav:
                 text, buttons = _render_navigation()
-                await _safe_edit(event, text, buttons)
+                await throttle.edit_message(event, text, buttons=buttons, parse_mode="md")
             else:
                 await _refresh_playback(event)
-            await event.answer("Refreshed")
+            await throttle.answer_callback(event, "Refreshed")
         # Navigation inputs
         elif data in _INPUT_MAP:
             await kodi.input_command(_INPUT_MAP[data])
-            await event.answer()
+            await throttle.answer_callback(event)
         else:
             log.debug("Unknown kodi remote callback: %s", data)
-            await event.answer()
+            await throttle.answer_callback(event)
 
 
 __all__ = ["register_kodi_remote"]

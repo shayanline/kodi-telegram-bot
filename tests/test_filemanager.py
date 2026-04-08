@@ -405,14 +405,6 @@ def test_deep_nesting(tmp_path):
         assert "ep01.mkv" in text3
 
 
-# ── Safe edit helper ──
-
-
-def test_safe_edit_is_async():
-    """Verify _safe_edit is defined and callable."""
-    assert callable(filemanager._safe_edit)
-
-
 # ── Register function ──
 
 

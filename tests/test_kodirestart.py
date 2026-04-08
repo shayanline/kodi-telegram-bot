@@ -76,7 +76,6 @@ def test_restart_auth_rejected(monkeypatch):
 def test_confirm_restart_success(monkeypatch):
     """Confirming restart quits Kodi and runs start command."""
     monkeypatch.setattr(config, "KODI_START_CMD", "echo ok")
-    monkeypatch.setattr(kodirestart, "_STARTUP_DELAY", 0)
 
     quit_calls = []
 
@@ -85,10 +84,15 @@ def test_confirm_restart_success(monkeypatch):
 
     monkeypatch.setattr(kodi, "quit_kodi", fake_quit)
 
+    async def fake_is_alive():
+        return False
+
+    monkeypatch.setattr(kodi, "is_alive", fake_is_alive)
+
     event = FakeEvent(b"kr:y")
 
     async def _run():
-        await event.edit("🔄 Restarting Kodi…", buttons=[])
+        await event.edit("🔄 Restarting Kodi…", buttons=None)
         await event.answer()
         await kodirestart._do_restart(event)
 
@@ -101,12 +105,16 @@ def test_confirm_restart_success(monkeypatch):
 def test_confirm_restart_failure(monkeypatch):
     """Start command failure is reported to the user."""
     monkeypatch.setattr(config, "KODI_START_CMD", "exit 1")
-    monkeypatch.setattr(kodirestart, "_STARTUP_DELAY", 0)
 
     async def fake_quit():
         pass
 
     monkeypatch.setattr(kodi, "quit_kodi", fake_quit)
+
+    async def fake_is_alive():
+        return False
+
+    monkeypatch.setattr(kodi, "is_alive", fake_is_alive)
 
     event = FakeEvent(b"kr:y")
 
@@ -121,12 +129,16 @@ def test_confirm_restart_failure(monkeypatch):
 def test_confirm_restart_timeout(monkeypatch):
     """Start command timeout is reported."""
     monkeypatch.setattr(config, "KODI_START_CMD", "sleep 60")
-    monkeypatch.setattr(kodirestart, "_STARTUP_DELAY", 0)
 
     async def fake_quit():
         pass
 
     monkeypatch.setattr(kodi, "quit_kodi", fake_quit)
+
+    async def fake_is_alive():
+        return False
+
+    monkeypatch.setattr(kodi, "is_alive", fake_is_alive)
 
     event = FakeEvent(b"kr:y")
 
@@ -145,6 +157,27 @@ def test_confirm_restart_timeout(monkeypatch):
     assert "timed out" in event._edited
 
 
+def test_restart_kodi_exit_timeout(monkeypatch):
+    """When Kodi does not exit in time, report the failure."""
+    monkeypatch.setattr(config, "KODI_START_CMD", "echo ok")
+    monkeypatch.setattr(kodirestart, "_EXIT_TIMEOUT", 0)
+
+    async def fake_quit():
+        pass
+
+    monkeypatch.setattr(kodi, "quit_kodi", fake_quit)
+
+    async def fake_is_alive():
+        return True
+
+    monkeypatch.setattr(kodi, "is_alive", fake_is_alive)
+
+    event = FakeEvent(b"kr:y")
+    asyncio.run(kodirestart._do_restart(event))
+    assert event._edited is not None
+    assert "did not exit" in event._edited
+
+
 # ── Cancel callback ──
 
 
@@ -153,12 +186,12 @@ def test_cancel_restart(monkeypatch):
     event = FakeEvent(b"kr:n")
 
     async def _run():
-        await event.edit("🛑 Restart cancelled.", buttons=[])
+        await event.edit("🛑 Restart cancelled.", buttons=None)
         await event.answer()
 
     asyncio.run(_run())
     assert event._edited == "🛑 Restart cancelled."
-    assert event._edited_buttons == []
+    assert event._edited_buttons is None
     assert event._answered
 
 
