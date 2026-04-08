@@ -168,8 +168,8 @@ def _projected_free_mb(after_adding_bytes: int) -> int:
     return free_now - int(after_adding_bytes / (1024 * 1024))
 
 
-def _current_reserved_bytes() -> int:
-    return sum(max(0, st.size - st.downloaded_bytes) for st in states.values())
+def _current_reserved_bytes(exclude: str | None = None) -> int:
+    return sum(max(0, st.size - st.downloaded_bytes) for name, st in states.items() if name != exclude)
 
 
 def _list_files_under(root: str, exclude: set[str]) -> list[tuple[float, str]]:
@@ -218,7 +218,7 @@ async def _ensure_disk_space(event, filename: str, file_size: int, path: str | N
     """
     target_path = path or os.path.join(config.DOWNLOAD_DIR, filename)
     while True:
-        cumulative = _current_reserved_bytes() + file_size
+        cumulative = _current_reserved_bytes(exclude=filename) + file_size
         projected = _projected_free_mb(cumulative)
         if projected >= config.MIN_FREE_DISK_MB:
             return True

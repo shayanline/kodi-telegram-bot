@@ -586,6 +586,36 @@ def test_ensure_disk_space_auto_accept(monkeypatch, tmp_path):
     assert not victim.exists()
 
 
+def test_ensure_disk_space_no_double_count_with_preregistered_state(monkeypatch, tmp_path):
+    """Pre-registered state must not double-count file size in projected free calculation."""
+    monkeypatch.setattr(config, "DOWNLOAD_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "MIN_FREE_DISK_MB", 200)
+    # 800 MB free, 500 MB file → projected should be 300 MB (>= 200), no deletion needed.
+    # Without the fix, projected would be 800 - (500+500) = -200 → wrongly triggers autoremove.
+    monkeypatch.setattr(utils, "free_disk_mb", lambda _: 800)
+    monkeypatch.setattr(config, "ORGANIZE_MEDIA", False)
+
+    file_size = 500 * 1024 * 1024
+    st = DownloadState("pre.mp4", str(tmp_path / "pre.mp4"), file_size)
+    states["pre.mp4"] = st
+
+    victim = tmp_path / "old.bin"
+    victim.write_text("should survive")
+
+    ev = FakeEvent()
+
+    async def _run():
+        from downloader import manager
+
+        return await manager._ensure_disk_space(ev, "pre.mp4", file_size, str(tmp_path / "pre.mp4"))
+
+    try:
+        assert asyncio.run(_run()) is True
+        assert victim.exists(), "Old file should NOT be deleted when space is sufficient"
+    finally:
+        states.pop("pre.mp4", None)
+
+
 def test_ensure_disk_space_no_candidate(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "DOWNLOAD_DIR", str(tmp_path))
     monkeypatch.setattr(config, "MIN_FREE_DISK_MB", 999999)
