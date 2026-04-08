@@ -56,7 +56,7 @@ class TruncatingFileHandler(logging.FileHandler):
                 current_size = os.path.getsize(self.baseFilename)
             except OSError:
                 current_size = 0
-            if current_size + len(msg) + 1 > self.max_bytes:
+            if current_size + len(msg.encode(self.encoding or "utf-8")) + 1 > self.max_bytes:
                 self._truncate_and_header(current_size)
             self.stream.write(msg + "\n")
             with contextlib.suppress(Exception):  # pragma: no cover

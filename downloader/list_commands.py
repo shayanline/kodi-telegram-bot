@@ -46,6 +46,7 @@ def _register_downloads_handler(client: TelegramClient):
             msg = await event.respond(text, buttons=buttons)
 
         message_tracker.register_message("__downloads_list__", msg, MessageType.DOWNLOAD_LIST, user_id)
+        message_tracker.trim_list_messages("__downloads_list__")
         for filename in states:
             message_tracker.register_message(filename, msg, MessageType.DOWNLOAD_LIST, user_id)
 
@@ -74,6 +75,7 @@ def _register_queue_handler(client: TelegramClient):
             msg = await event.respond(text, buttons=buttons)
 
         message_tracker.register_message("__queue_list__", msg, MessageType.QUEUE_LIST, user_id)
+        message_tracker.trim_list_messages("__queue_list__")
         for filename in queue.items:
             message_tracker.register_message(filename, msg, MessageType.QUEUE_LIST, user_id)
 
@@ -168,18 +170,20 @@ def _build_downloads_list(active_states):
     lines = ["📁 Active Downloads:"]
     buttons = []
 
-    for i, (filename, state) in enumerate(active_states.items(), 1):
+    display_num = 0
+    for filename, state in active_states.items():
         if state.cancelled or state.completed:
             continue
 
+        display_num += 1
         if state.paused:
-            line = f"{i}. {filename} (Paused)"
+            line = f"{display_num}. {filename} (Paused)"
         elif state.progress_percent > 0 and state.downloaded_bytes > 0:
             downloaded_size = utils.humanize_size(state.downloaded_bytes)
             total_size = utils.humanize_size(state.size)
-            line = f"{i}. {filename} ({state.progress_percent}% - {downloaded_size}/{total_size})"
+            line = f"{display_num}. {filename} ({state.progress_percent}% - {downloaded_size}/{total_size})"
         else:
-            line = f"{i}. {filename} (Starting...)"
+            line = f"{display_num}. {filename} (Starting...)"
 
         lines.append(line)
 

@@ -55,14 +55,8 @@ class DownloadQueue:
     def set_runner(self, runner: RunnerFunc):  # runner(client, qitem)
         self._runner = runner
 
-    def stats(self):
-        return {
-            "limit": self.limit,
-            "pending": len(self.items),  # items waiting to be processed
-        }
-
     def is_saturated(self) -> bool:
-        return self._semaphore.locked()
+        return self._semaphore.locked() or len(self.items) > 0
 
     async def enqueue(self, qi: QueuedItem) -> int:
         """Enqueue an item and return its 1-based position at insertion.
@@ -158,7 +152,7 @@ class DownloadQueue:
                 if self._runner:
                     from . import manager  # local import to avoid cycle
 
-                    if not await manager._ensure_disk_space(qi.event, qi.filename, qi.size, qi.path, from_queue=True):
+                    if not await manager._ensure_disk_space(qi.event, qi.filename, qi.size, qi.path):
                         return
                     await self._runner(client, qi)
             except Exception:

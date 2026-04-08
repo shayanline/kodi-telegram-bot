@@ -36,20 +36,23 @@ class MockMessage:
 def test_handle_queued_duplicate_same_user():
     original = Ev(10, 1)
     qi = QueuedItem("dup.bin", object(), 10, "/tmp/dup.bin", original)
+    qi.message = MockMessage(50)  # Provide a message so "Already queued" path is exercised
     dup = Ev(10, 2)  # same sender
 
     # Mock the message tracker to avoid issues with telethon Message types
     with patch("downloader.manager.message_tracker.register_message"):
         asyncio.run(_handle_queued_duplicate(dup, qi, qi.filename))
 
-    assert any(("Already queued" in t) or (t.startswith("🕒 Queued:")) for t, _ in dup.replies)
-    # reply_to may be None in test stub since queued placeholder has no id attribute
+    assert any("Already queued" in t for t, _ in dup.replies)
+    # reply_to should point to the queued message
+    assert any(reply_to == 50 for _, reply_to in dup.replies)
     assert qi.watcher_events is None  # still no watcher for same user
 
 
 def test_handle_queued_duplicate_different_user():
     original = Ev(10, 1)
     qi = QueuedItem("dup2.bin", object(), 10, "/tmp/dup2.bin", original)
+    qi.message = MockMessage(51)  # Provide a message so "Already queued" path is exercised
     dup = Ev(11, 3)
 
     # Mock the message tracker to avoid issues with telethon Message types

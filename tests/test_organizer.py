@@ -104,8 +104,8 @@ def test_forced_category_override(monkeypatch):
         monkeypatch.setattr(config, "DOWNLOAD_DIR", td)
         monkeypatch.setattr(config, "ORGANIZE_MEDIA", True)
         # Ambiguous: no year but force movie
-    path, _ = build_final_path("Some.Random.Name.mkv", base_dir=td, forced_category="movie")
-    assert config.MOVIES_DIR_NAME in path
+        path, _ = build_final_path("Some.Random.Name.mkv", base_dir=td, forced_category="movie")
+        assert config.MOVIES_DIR_NAME in path
 
 
 def test_parse_movie_space_separated():
@@ -152,9 +152,9 @@ def test_norm_word_preserves_acronyms():
     assert p.normalized_stem == "FBI S01E01"
 
 
-def test_edition_not_in_junk():
-    """Edition tokens (extended, unrated, imax) should be extracted, not junked."""
+def test_edition_stripped_from_title():
+    """Edition tokens (extended, unrated, imax) should be stripped from titles."""
     p = parse_filename("Aliens.1986.Extended.1080p.mkv")
     assert p.category == "movie"
-    assert p.edition == "Extended"
+    assert "Extended" not in p.title
     assert p.normalized_stem == "Aliens (1986)"

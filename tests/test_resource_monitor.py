@@ -2,8 +2,7 @@ import utils
 
 
 def test_memory_warning(monkeypatch):
-    # Reset internal timer
-    utils._last_mem_warn = 0
+    monkeypatch.setattr(utils, "_last_mem_warn", 0)
 
     class VM:  # simple structure to mimic psutil result
         def __init__(self, percent):

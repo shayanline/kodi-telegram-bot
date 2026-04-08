@@ -16,9 +16,9 @@ from logger import log
 from utils import remove_empty_parents
 
 
-def startup_message() -> None:
+async def startup_message() -> None:
     try:
-        kodi.notify("Telegram Bot", "Ready for private media uploads")
+        await kodi.notify("Telegram Bot", "Ready for private media uploads")
     except Exception as e:
         log.warning("Startup notification failed: %s", e)
 
@@ -52,7 +52,7 @@ async def _setup_client():
         log.debug("Initial catch_up completed")
     except Exception as e:
         log.warning("catch_up error: %s", e)
-    startup_message()
+    await startup_message()
     log.info("Bridge running - send a video or audio file to this bot in a private chat.")
     return client, asyncio.Event()
 
@@ -77,7 +77,7 @@ async def _graceful_shutdown(client, shutdown_event: asyncio.Event):
     removed = _cleanup_partials(snapshot)
     if removed:
         log.info("Removed %d partial file(s)", removed)
-    client.disconnect()
+    await client.disconnect()
 
 
 def _cleanup_partials(active_snapshot):
@@ -100,9 +100,18 @@ def _cleanup_partials(active_snapshot):
         for qi in queue.items.values():
             try:
                 if os.path.exists(qi.path):
-                    sz = os.path.getsize(qi.path)
-                    if qi.size == 0 or sz < qi.size * 0.98:
-                        removed += _maybe_remove(qi.path, qi.size or sz)
+                    if qi.size == 0:
+                        # Unknown expected size — always remove partial
+                        try:
+                            os.remove(qi.path)
+                            remove_empty_parents(qi.path, [config.DOWNLOAD_DIR])
+                            removed += 1
+                        except Exception:
+                            pass
+                    else:
+                        sz = os.path.getsize(qi.path)
+                        if sz < qi.size * 0.98:
+                            removed += _maybe_remove(qi.path, qi.size)
             except Exception:
                 pass
     except Exception:

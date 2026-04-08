@@ -37,18 +37,20 @@ class FakeStMsg(DummyMsg):  # simple subclass just to mirror real object usage
 
 
 def test_pause_uses_last_text():
-    # Simulate started download reusing prior queued message
+    # Simulate started download and verify paused state reflects in progress text
     st = DownloadState("fileC.bin", "/tmp/fileC.bin", 1000)
     msg = FakeStMsg()
     st.message = msg
-    st.last_text = "Starting download of fileC.bin..."  # what we set in code
     states[st.filename] = st
     register_file_id(st.filename)
-    # Simulate pause callback logic directly (equivalent to pressing pause)
+    # Simulate some progress first
+    st.update_progress(500, 50, "1 MB/s")
     st.mark_paused()
-    # mimic update call
-    asyncio.run(msg.edit(st.last_text))
-    assert "Queued" not in (msg.last or "")
+    # Verify paused state is reflected in progress text
+    progress_text = st.get_progress_text()
+    assert "⏸️ Paused" in progress_text
+    assert "50%" in progress_text
+    assert "Queued" not in progress_text
     # cleanup
     states.pop(st.filename, None)
     fid = register_file_id(st.filename)

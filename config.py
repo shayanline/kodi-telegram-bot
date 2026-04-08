@@ -56,9 +56,7 @@ def _parse_allowed(raw: str) -> tuple[set[int], set[str]]:
 ALLOWED_USER_IDS, ALLOWED_USERNAMES = _parse_allowed(_RAW_ALLOWED_USERS)
 
 KODI_URL: str = os.getenv("KODI_URL", "http://localhost:8080/jsonrpc")
-KODI_USERNAME: str = os.getenv("KODI_USERNAME", "kodi")
-KODI_PASSWORD: str = os.getenv("KODI_PASSWORD", "")
-KODI_AUTH = (KODI_USERNAME, KODI_PASSWORD)
+KODI_AUTH = (os.getenv("KODI_USERNAME", "kodi"), os.getenv("KODI_PASSWORD", ""))
 HEADERS = {"Content-Type": "application/json"}
 
 _RAW_DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR", "~/Downloads")

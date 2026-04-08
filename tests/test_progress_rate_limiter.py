@@ -1,7 +1,6 @@
 import time
 
-import kodi
-from downloader.progress import RateLimiter, _calc, _should_notify_kodi
+from downloader.progress import RateLimiter, _calc
 
 
 def test_rate_limiter(monkeypatch):
@@ -22,10 +21,9 @@ def test_rate_limiter(monkeypatch):
 
 def test_calc_and_notify(monkeypatch):
     p, speed = _calc(500, 1000, 5)
-    assert p == 50 and speed.endswith("B")
-    monkeypatch.setattr(kodi, "is_playing", lambda: False)
+    assert p == 50 and speed == "100.0 B"
     rl = RateLimiter(min_tg=0, min_kodi=1)
-    # Trigger first call at 50% (not multiple of 10 except 50 yes) -> should notify
-    assert _should_notify_kodi(50, rl) is True
-    # Rapid second call same percent blocked by rate.kodi_ok timing (since min_kodi=1s)
-    assert _should_notify_kodi(50, rl) is False
+    # kodi_ok should respect rate limiting
+    assert rl.kodi_ok() is True
+    # Rapid second call blocked by rate.kodi_ok timing (since min_kodi=1s)
+    assert rl.kodi_ok() is False

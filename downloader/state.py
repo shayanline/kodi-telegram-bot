@@ -128,6 +128,12 @@ class MessageTracker:
     def cleanup_file(self, filename: str):
         self._messages.pop(filename, None)
 
+    def trim_list_messages(self, sentinel_key: str, max_kept: int = 5):
+        """Keep only the most recent list messages for a sentinel key."""
+        msgs = self._messages.get(sentinel_key)
+        if msgs and len(msgs) > max_kept:
+            self._messages[sentinel_key] = msgs[-max_kept:]
+
 
 message_tracker = MessageTracker()
 

@@ -50,6 +50,9 @@ _NOT_FOUND = "File not found"
 # Test hook: auto-accept deletions (bypasses interactive prompt during tests)
 TEST_AUTO_ACCEPT = False
 
+# Pending category selections: file_id -> (document, event, file_size)
+_pending_categories: dict[str, tuple[Any, Any, int]] = {}
+
 
 async def _safe_edit(msg, text: str, buttons=None):
     try:
@@ -77,6 +80,11 @@ async def _update_tracked_messages(filename: str, state: DownloadState):
                 if queue.items:
                     text, buttons = _build_queue_list(queue.items)
                     await tracked.message.edit(text, buttons=buttons)
+                else:
+                    await tracked.message.edit(
+                        "📝 No queued downloads",
+                        buttons=[[Button.inline("🔄 Refresh", data="refresh_queue")]],
+                    )
         except Exception:
             pass
 
@@ -183,9 +191,7 @@ def _select_deletion_candidate(target_path: str, exclude: set[str]) -> str | Non
     return all_files[0][1] if all_files else None
 
 
-async def _ensure_disk_space(
-    event, filename: str, file_size: int, path: str | None = None, from_queue: bool = False
-) -> bool:
+async def _ensure_disk_space(event, filename: str, file_size: int, path: str | None = None) -> bool:
     """Interactive disk space assurance with recursive candidate deletions.
 
     Holds the concurrency slot (caller acquires it) while waiting for user decision.
@@ -395,7 +401,7 @@ async def _send_start_message(event: events.NewMessage.Event, state: DownloadSta
     user_id = getattr(sender, "id", None)
     message_tracker.register_message(state.filename, msg, MessageType.PROGRESS, user_id)
 
-    kodi.notify("Download Started", state.filename)
+    await kodi.notify("Download Started", state.filename)
     log.info("Start download %s (%s)", state.filename, utils.humanize_size(state.size))
     return msg
 
@@ -424,14 +430,14 @@ async def _post_download_check(
             msg,
             f"❌ Download incomplete. Expected {utils.humanize_size(expected_size)}",
         )
-        kodi.notify("Download Failed", f"Incomplete: {filename}")
+        await kodi.notify("Download Failed", f"Incomplete: {filename}")
         log.error("Incomplete download %s", filename)
     return False
 
 
 async def _handle_success(msg, filename: str, path: str, state: DownloadState) -> None:
     state.mark_completed()
-    playing = kodi.is_playing()
+    playing = await kodi.is_playing()
     text = (
         f"✅ Download complete: {filename}\nKodi playing something else. File ready."
         if playing
@@ -440,8 +446,8 @@ async def _handle_success(msg, filename: str, path: str, state: DownloadState) -
     await _safe_edit(msg, text)
     await _update_tracked_messages(filename, state)
     if not playing:
-        kodi.play(path)
-    kodi.notify("Download Complete", filename)
+        await kodi.play(path)
+    await kodi.notify("Download Complete", filename)
     log.info("Completed %s", filename)
 
 
@@ -464,7 +470,7 @@ async def _handle_error(
         return
     err = str(exc)
     await _safe_edit(msg, f"❌ Error: {err[:200]}")
-    kodi.notify("Download Failed", err[:50])
+    await kodi.notify("Download Failed", err[:50])
     log.error("Download error %s: %s", filename, err)
 
 
@@ -638,6 +644,7 @@ def _register_download_handler(client: TelegramClient):
             return
         if ambiguous and config.ORGANIZE_MEDIA:
             file_id = register_file_id(original_filename)
+            _pending_categories[file_id] = (document, event, document.size or 0)
             buttons = [
                 [
                     Button.inline("🎬 Movie", data=f"catm:{file_id}"),
@@ -703,7 +710,7 @@ def _register_start_handler(client: TelegramClient):
 async def _register_bot_commands(client: TelegramClient):
     try:
         from telethon.tl.functions.bots import SetBotCommandsRequest
-        from telethon.tl.types import BotCommand
+        from telethon.tl.types import BotCommand, BotCommandScopeDefault
     except Exception:
         return
     commands = [
@@ -713,7 +720,7 @@ async def _register_bot_commands(client: TelegramClient):
         BotCommand("queue", "Show queued downloads"),
     ]
     with contextlib.suppress(Exception):
-        await client(SetBotCommandsRequest(commands=commands))
+        await client(SetBotCommandsRequest(scope=BotCommandScopeDefault(), lang_code="", commands=commands))
 
 
 def _register_control_callbacks(client: TelegramClient):
@@ -770,6 +777,7 @@ def _register_pause_resume_cancel(client: TelegramClient):
 
     async def _do_cancel(st, event):
         st.mark_cancelled()
+        await _update_progress_message(st, "🛑 Cancelling")
         await _update_tracked_messages(st.filename, st)
         with contextlib.suppress(Exception):
             await event.answer("Cancelling")
@@ -883,22 +891,25 @@ def _register_category_selection(client: TelegramClient):
             with contextlib.suppress(Exception):
                 await event.answer(_NOT_FOUND, alert=False)
             return
+        pending = _pending_categories.pop(file_id, None)
+        if not pending:
+            with contextlib.suppress(Exception):
+                await event.answer("Selection expired", alert=False)
+            return
+        document, orig_event, size = pending
         forced = {"catm": "movie", "cats": "series", "cato": "other"}.get(prefix)
         if not forced:
             with contextlib.suppress(Exception):
                 await event.answer("Unknown", alert=False)
             return
         path, final_name = build_final_path(filename, forced_category=forced)
-        fake_document = event._message.document
-        size = getattr(fake_document, "size", 0) or 0
-        orig_event = event._message
         if states.get(final_name) or queue.items.get(final_name):
             with contextlib.suppress(Exception):
                 await event.answer("Already queued", alert=False)
             return
-        if not await _ensure_disk_space(event, final_name, size, path):
+        if not await _ensure_disk_space(orig_event, final_name, size, path):
             return
-        await _enqueue_or_run(client, fake_document, final_name, size, path, orig_event)
+        await _enqueue_or_run(client, document, final_name, size, path, orig_event)
         with contextlib.suppress(Exception):
             await event.answer("Queued", alert=False)
 

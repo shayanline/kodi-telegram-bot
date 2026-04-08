@@ -45,10 +45,10 @@ async def wait_if_paused(state: DownloadState):
 def create_progress_callback(filename: str, start: float, rate: RateLimiter, msg, state: DownloadState | None):
     last = {"received": 0, "change": start}
 
-    def maybe_warn_memory():
+    async def maybe_warn_memory():
         try:
             if utils.maybe_memory_warning(config.MEMORY_WARNING_PERCENT):
-                kodi.notify("Memory Warning", f"High RAM usage > {config.MEMORY_WARNING_PERCENT}%")
+                await kodi.notify("Memory Warning", f"High RAM usage > {config.MEMORY_WARNING_PERCENT}%")
         except Exception:
             pass
 
@@ -65,7 +65,7 @@ def create_progress_callback(filename: str, start: float, rate: RateLimiter, msg
                 f"Speed: {speed}/s",
                 **_build_edit_kwargs(),
             )
-        maybe_warn_memory()
+        await maybe_warn_memory()
 
     async def progress(received: int, total: int):
         if await _check_state(state):
@@ -81,8 +81,8 @@ def create_progress_callback(filename: str, start: float, rate: RateLimiter, msg
         if rate.telegram_ok():
             await send_tg_update(percent, received, total, speed)
 
-        if _should_notify_kodi(percent, rate):
-            kodi.progress_notify(filename, percent, speed)
+        if percent > 0 and percent % 10 == 0 and rate.kodi_ok() and not await kodi.is_playing():
+            await kodi.progress_notify(filename, percent, speed)
 
     return progress
 
@@ -109,10 +109,6 @@ def _calc(received: int, total: int, elapsed: float):
     percent = int(received / total * 100) if total else 0
     speed = utils.humanize_size(received / elapsed)
     return percent, speed
-
-
-def _should_notify_kodi(percent: int, rate: RateLimiter) -> bool:
-    return percent % 10 == 0 and rate.kodi_ok() and not kodi.is_playing()
 
 
 __all__ = ["RateLimiter", "create_progress_callback", "wait_if_paused"]

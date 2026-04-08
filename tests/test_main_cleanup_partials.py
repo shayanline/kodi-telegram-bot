@@ -16,5 +16,5 @@ def test_cleanup_partials(tmp_path, monkeypatch):
     st_complete = DownloadState("complete.bin", str(complete), 1000)
     st_partial = DownloadState("partial.bin", str(partial), 1000)
     removed = main._cleanup_partials([st_complete, st_partial])
-    assert removed >= 1
+    assert removed == 1
     assert os.path.exists(complete) and not os.path.exists(partial)

@@ -38,22 +38,21 @@ async def _prepare_queue(n, limit):
 
 async def _test_renumber():
     q = await _prepare_queue(4, limit=2)
-    # Simulate processing of first item
-    # Manually trigger internal processing to pop and renumber
-    # We put a STOP sentinel so worker exits after tasks done
-    await asyncio.sleep(0.05)  # allow some tasks to start
-    # After some processing remaining queued items should have been renumbered
-    # Just ensure no exception and edits occurred
+    # Allow some tasks to start so renumbering is triggered
+    await asyncio.sleep(0.05)
+    # Collect all edits from remaining queued items
     edits = []
     for qi in q.items.values():
         edits.extend(qi.message.edits)
     await q.stop()
-    return True
+    return edits
 
 
 def test_queue_renumber_and_concurrency():
-    renumber_ok = asyncio.run(_test_renumber())
-    assert renumber_ok is True
+    edits = asyncio.run(_test_renumber())
+    # After items start processing, remaining queued items should be renumbered
+    for text in edits:
+        assert "Queued #" in text
 
     # Basic concurrency smoke: ensure queue processes more than one item without serial bottleneck
     # by enqueuing several small tasks and confirming total duration < artificial serial time.

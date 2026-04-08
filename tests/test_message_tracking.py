@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from downloader.state import DownloadState, MessageTracker, MessageType
+from downloader.state import DownloadState, MessageTracker, MessageType, TrackedMessage
 
 
 class MockMessage:
@@ -93,25 +93,20 @@ def test_download_state_progress_tracking():
     assert "50%" in paused_text
 
 
-@pytest.mark.asyncio
-async def test_message_tracker_cleanup():
+def test_message_tracker_cleanup():
     """Test message tracker cleanup functionality."""
     tracker = MessageTracker()
 
-    # Create and register messages
     msg1 = MockMessage(1)
     msg2 = MockMessage(2)
 
     tracker.register_message("test_file.mp4", msg1, MessageType.PROGRESS, 123)
     tracker.register_message("test_file.mp4", msg2, MessageType.DOWNLOAD_LIST, 123)
 
-    # Verify messages are registered
     assert len(tracker.get_messages("test_file.mp4")) == 2
 
-    # Test cleanup
     tracker.cleanup_file("test_file.mp4")
 
-    # Verify all messages are cleaned up
     assert len(tracker.get_messages("test_file.mp4")) == 0
 
 
@@ -145,15 +140,11 @@ def test_message_tracker_filtering():
     assert MessageType.QUEUE_LIST in list_types
 
 
-@pytest.mark.asyncio
-async def test_tracked_message_basic_functionality():
+def test_tracked_message_basic_functionality():
     """Test TrackedMessage basic functionality."""
-    from downloader.state import TrackedMessage
-
     msg = MockMessage(1)
     tracked = TrackedMessage(msg, MessageType.PROGRESS, 123)
 
-    # Test basic attributes
     assert tracked.message == msg
     assert tracked.message_type == MessageType.PROGRESS
     assert tracked.user_id == 123

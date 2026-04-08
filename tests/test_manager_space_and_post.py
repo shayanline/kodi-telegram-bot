@@ -38,8 +38,6 @@ def test_ensure_disk_space_interactive_auto_accept(monkeypatch, tmp_path):
     ev = StubEvent()
     ok = asyncio.run(manager._ensure_disk_space(ev, "big.bin", 50 * 1024 * 1024, str(tmp_path / "big.bin")))
     assert ok is True
-    # No auto-clean message; interactive path suppressed prompts by auto-accept
-    assert any("Re-checking" in m or "Storage" in m for m in ev.messages) or ev.messages == []
 
 
 def test_ensure_disk_space_failure(monkeypatch):

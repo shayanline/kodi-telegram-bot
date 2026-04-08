@@ -84,9 +84,7 @@ _JUNK = {
     # Audio / channels
     "aac",
     "dd5",
-    "dd5.1",
     "ddp5",
-    "ddp5.1",
     "dts",
     "atmos",
     "truehd",
@@ -130,7 +128,7 @@ _JUNK = {
     "ad",
 }
 
-# Edition tokens we might *optionally* keep to append after title (normalized form)
+# Edition tokens stripped from titles (not useful for path building)
 _EDITION_KEEP = {"extended", "remastered", "unrated", "imax", "directors", "director", "ultimate"}
 
 
@@ -143,7 +141,6 @@ class ParsedMedia:
     episode: int | None = None
     # Final normalized filename (without directory) suggestion (no extension)
     normalized_stem: str | None = None
-    edition: str | None = None  # e.g. Extended, Remastered (movies only currently)
 
 
 def _tokenize(name: str) -> list[str]:
@@ -155,9 +152,17 @@ def _tokenize(name: str) -> list[str]:
 
 def _clean_tokens(tokens: Iterable[str]) -> list[str]:
     out: list[str] = []
+    skip_next_lone_digit = False
     for t in tokens:
         low = t.lower()
+        # After audio codec tokens like "dd5", skip the orphaned channel digit ("1" from "DD5.1")
+        if skip_next_lone_digit and re.fullmatch(r"\d", low):
+            skip_next_lone_digit = False
+            continue
+        skip_next_lone_digit = False
         if low in _JUNK:
+            if low in {"dd5", "ddp5", "dd7", "ddp7"}:
+                skip_next_lone_digit = True
             continue
         if re.fullmatch(r"\d+ch", low):
             continue
@@ -227,23 +232,9 @@ def _detect_series(tokens: list[str]) -> tuple[int | None, int | None, int, str 
     return None, None, -1, None
 
 
-def _extract_edition(tokens: list[str]) -> tuple[str | None, list[str]]:
-    # Look for edition keywords near the end (before junk removal) e.g. Extended, Remastered
-    edition_tokens: list[str] = []
-    remaining = []
-    for t in tokens:
-        low = t.lower()
-        if low in _EDITION_KEEP:
-            # Avoid duplicates / combine consecutive
-            if low not in (et.lower() for et in edition_tokens):
-                edition_tokens.append(t)
-            continue
-        remaining.append(t)
-    edition = None
-    if edition_tokens:
-        # Normalize ordering (Extended Remastered etc.)
-        edition = " ".join(_norm_word(e) for e in edition_tokens)
-    return edition, remaining
+def _strip_edition_tokens(tokens: list[str]) -> list[str]:
+    """Remove edition keywords (Extended, Remastered, …) from token list."""
+    return [t for t in tokens if t.lower() not in _EDITION_KEEP]
 
 
 _MOVIE_LINE_RE = re.compile(r"^🎬\s+(.+?)\s*\((\d{4})\)\s*$")
@@ -270,7 +261,7 @@ def _parse_caption(text: str | None) -> ParsedMedia | None:
         title = m.group(1).strip()
         year = int(m.group(2))
         norm_stem = f"{title} ({year})"
-        return ParsedMedia("movie", title, year, None, None, norm_stem, None)
+        return ParsedMedia("movie", title, year, None, None, norm_stem)
     # Series pattern requires header + episode line
     sh = _SERIES_HEADER_RE.match(lines[0])
     if sh:
@@ -284,7 +275,7 @@ def _parse_caption(text: str | None) -> ParsedMedia | None:
                 season = int(epm.group(1))
                 episode = int(epm.group(2))
                 norm_stem = f"{title} S{season:02d}E{episode:02d}"
-                return ParsedMedia("series", title, year, season, episode, norm_stem, None)
+                return ParsedMedia("series", title, year, season, episode, norm_stem)
     return None
 
 
@@ -292,8 +283,7 @@ def _parse_from_tokens(tokens: list[str]) -> ParsedMedia:
     """Filename token heuristic parsing (legacy path)."""
     year, year_index = _detect_year(tokens)
     season, episode, series_index, ep_tag = _detect_series(tokens)
-    edition, base_tokens = _extract_edition(tokens)
-    tokens = base_tokens
+    tokens = _strip_edition_tokens(tokens)
     if season is not None or episode is not None:
         season, episode, series_index, ep_tag = _detect_series(tokens)
     if year is not None:
@@ -308,21 +298,16 @@ def _parse_from_tokens(tokens: list[str]) -> ParsedMedia:
         title = _build_title(cleaned or show_tokens)
         suffix = ep_tag or f"S{season:02d}E{episode:02d}"
         norm_stem = f"{title} {suffix}"
-        return ParsedMedia("series", title, show_year, season, episode, norm_stem, edition)
+        return ParsedMedia("series", title, show_year, season, episode, norm_stem)
     if year is not None and year_index > 0:
         title_tokens = tokens[:year_index]
         cleaned = _clean_tokens(title_tokens)
-        base_title = _build_title(cleaned or title_tokens)
-        title = base_title
-        norm_title = base_title
-        if edition:
-            title = f"{base_title} {edition}"
-            norm_title = base_title
-        norm_stem = f"{norm_title} ({year})"
-        return ParsedMedia("movie", title, year, None, None, norm_stem, edition)
+        title = _build_title(cleaned or title_tokens)
+        norm_stem = f"{title} ({year})"
+        return ParsedMedia("movie", title, year, None, None, norm_stem)
     cleaned_all = _clean_tokens(tokens)
     title = _build_title(cleaned_all or tokens)
-    return ParsedMedia("other", title, None, None, None, None, edition)
+    return ParsedMedia("other", title)
 
 
 def parse_filename(filename: str, text: str | None = None) -> ParsedMedia:
@@ -331,7 +316,7 @@ def parse_filename(filename: str, text: str | None = None) -> ParsedMedia:
     if parsed_caption:
         return parsed_caption
     stem, _ext = os.path.splitext(filename)
-    stem = re.sub(r"_(\d+)$", "", stem)
+    stem = re.sub(r"(?<=\D)_(\d{1,3})$", "", stem)
     tokens = _tokenize(stem)
     if not tokens:
         return ParsedMedia("unknown", filename)
@@ -359,8 +344,8 @@ def build_final_path(
         if forced_category == "series" and not parsed.normalized_stem:
             base_title = parsed.title or os.path.splitext(filename)[0]
             parsed.normalized_stem = f"{base_title} S01E01"
-            parsed.season = parsed.season or 1
-            parsed.episode = parsed.episode or 1
+            parsed.season = parsed.season if parsed.season is not None else 1
+            parsed.episode = parsed.episode if parsed.episode is not None else 1
     ext = os.path.splitext(filename)[1]
 
     if parsed.category == "movie" and parsed.normalized_stem:
