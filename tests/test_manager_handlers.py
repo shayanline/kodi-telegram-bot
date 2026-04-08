@@ -728,3 +728,116 @@ def test_start_handler_unauthorized(monkeypatch):
     asyncio.run(handler(ev))
     assert ev._responded is not None and "Not authorized" in ev._responded
     client.loop.close()
+
+
+# ── Deletion callback ──
+
+
+class FakeCallbackEvent:
+    """Minimal callback query event for testing deletion callbacks."""
+
+    def __init__(self, data: bytes):
+        self.data = data
+        self._answered = None
+
+    async def answer(self, text=None, **kw):
+        self._answered = text
+
+    async def edit(self, text, **kw):
+        pass
+
+
+def test_deletion_callback_accept(monkeypatch):
+    """Clicking Yes edits the message, clears buttons, and resolves the future."""
+    from downloader import manager
+    from downloader.state import PendingDeletion, pending_deletions
+
+    client = FakeClient()
+    manager._register_deletion_callbacks(client)
+    handler = client.handlers[0]
+
+    async def _run():
+        msg = FakeMsg()
+        pending = PendingDeletion(filename="movie.mp4", candidate="old.mkv")
+        pending.message = msg
+        pending_deletions["abc123"] = pending
+
+        ev = FakeCallbackEvent(b"delok:abc123")
+        await handler(ev)
+
+        assert pending.choice == "yes"
+        assert pending.future.done()
+        assert msg.edited is not None
+        assert "old.mkv" in msg.edited
+        assert ev._answered == "Deleting"
+        pending_deletions.pop("abc123", None)
+
+    asyncio.run(_run())
+    client.loop.close()
+
+
+def test_deletion_callback_decline(monkeypatch):
+    """Clicking No edits the message with cancellation text and resolves the future."""
+    from downloader import manager
+    from downloader.state import PendingDeletion, pending_deletions
+
+    client = FakeClient()
+    manager._register_deletion_callbacks(client)
+    handler = client.handlers[0]
+
+    async def _run():
+        msg = FakeMsg()
+        pending = PendingDeletion(filename="movie.mp4", candidate="old.mkv")
+        pending.message = msg
+        pending_deletions["def456"] = pending
+
+        ev = FakeCallbackEvent(b"delnx:def456")
+        await handler(ev)
+
+        assert pending.choice == "no"
+        assert pending.future.done()
+        assert msg.edited is not None
+        assert "movie.mp4" in msg.edited
+        assert ev._answered == "Cancelled"
+        pending_deletions.pop("def456", None)
+
+    asyncio.run(_run())
+    client.loop.close()
+
+
+def test_deletion_callback_not_found():
+    """Unknown pid returns not-found message."""
+    from downloader import manager
+
+    client = FakeClient()
+    manager._register_deletion_callbacks(client)
+    handler = client.handlers[0]
+
+    ev = FakeCallbackEvent(b"delok:unknown")
+    asyncio.run(handler(ev))
+    assert ev._answered is not None and "no longer active" in ev._answered
+    client.loop.close()
+
+
+def test_deletion_callback_already_processed():
+    """Double-clicking after processing returns already-processed message."""
+    from downloader import manager
+    from downloader.state import PendingDeletion, pending_deletions
+
+    client = FakeClient()
+    manager._register_deletion_callbacks(client)
+    handler = client.handlers[0]
+
+    async def _run():
+        pending = PendingDeletion(filename="f.mp4", candidate="old.mkv")
+        pending.message = FakeMsg()
+        pending.future.set_result(True)
+        pending_deletions["dup789"] = pending
+
+        ev = FakeCallbackEvent(b"delok:dup789")
+        await handler(ev)
+        assert ev._answered == "Already processed"
+        pending_deletions.pop("dup789", None)
+
+    asyncio.run(_run())
+    client.loop.close()

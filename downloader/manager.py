@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from telethon import Button, TelegramClient, events
-from telethon.tl.types import Document
+from telethon.tl.types import Document, ReplyInlineMarkup
 
 import config
 import kodi
@@ -58,6 +58,9 @@ _CATEGORY_TTL_SECONDS = 600  # 10 minutes
 # Serializes the check-then-act section in _download to prevent duplicate race conditions
 _download_lock = asyncio.Lock()
 
+# Prevent GC of fire-and-forget download tasks (see RUF006)
+_bg_tasks: set[asyncio.Task[None]] = set()
+
 
 def _prune_stale_categories():
     """Remove pending category entries older than TTL."""
@@ -65,6 +68,13 @@ def _prune_stale_categories():
     stale = [k for k, v in _pending_categories.items() if v[3] < cutoff]
     for k in stale:
         _pending_categories.pop(k, None)
+
+
+def _spawn(coro: Any) -> None:
+    """Launch a background task and prevent its garbage collection."""
+    task = asyncio.create_task(coro)
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
 
 
 async def _safe_edit(msg, text: str, buttons=None, state: DownloadState | None = None):
@@ -243,7 +253,7 @@ async def _ensure_disk_space(event, filename: str, file_size: int, path: str | N
 
         # Interactive prompt
         pid = uuid.uuid4().hex[:8]
-        pending = PendingDeletion()
+        pending = PendingDeletion(filename=filename, candidate=cand_name)
         pending_deletions[pid] = pending
         free_now = utils.free_disk_mb(config.DOWNLOAD_DIR)
         needed_after = config.MIN_FREE_DISK_MB
@@ -729,7 +739,7 @@ def _register_download_handler(client: TelegramClient):
 
         if direct_download:
             document, filename, size, path = direct_download
-            await _start_direct_download(client, event, document, filename, size, path)
+            _spawn(_start_direct_download(client, event, document, filename, size, path))
             log.debug("Started %s", filename)
 
 
@@ -1008,6 +1018,7 @@ def _register_qcancel_confirm(client: TelegramClient):
 
 def _register_deletion_callbacks(client: TelegramClient):
     pattern = b"del(ok|nx):"
+    no_buttons = ReplyInlineMarkup(rows=[])
 
     @client.on(events.CallbackQuery(pattern=pattern))
     @throttle.serialized
@@ -1023,9 +1034,21 @@ def _register_deletion_callbacks(client: TelegramClient):
             return
         if action == "delok":
             pending.choice = "yes"
+            if pending.message:
+                await _safe_edit(
+                    pending.message,
+                    f"✅ Deleting {pending.candidate}...",
+                    buttons=no_buttons,
+                )
             await throttle.answer_callback(event, "Deleting", alert=False)
         else:
             pending.choice = "no"
+            if pending.message:
+                await _safe_edit(
+                    pending.message,
+                    f"🛑 Cancelled: insufficient space for {pending.filename}",
+                    buttons=no_buttons,
+                )
             await throttle.answer_callback(event, "Cancelled", alert=False)
         with contextlib.suppress(Exception):
             pending.future.set_result(True)
@@ -1067,7 +1090,7 @@ def _register_category_selection(client: TelegramClient):
 
         if direct_download:
             document, final_name, size, path = direct_download
-            await _start_direct_download(client, orig_event, document, final_name, size, path)
+            _spawn(_start_direct_download(client, orig_event, document, final_name, size, path))
         await throttle.answer_callback(event, "Started", alert=False)
 
 

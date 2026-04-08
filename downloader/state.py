@@ -161,6 +161,8 @@ def resolve_file_id(file_id: str) -> str | None:
 class PendingDeletion:
     """Tracks an interactive disk-space deletion prompt."""
 
+    filename: str = ""
+    candidate: str = ""
     choice: str | None = None
     message: Any | None = None
     future: asyncio.Future = field(init=False)
