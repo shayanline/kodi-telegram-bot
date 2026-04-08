@@ -14,6 +14,7 @@ from downloader.queue import queue
 from downloader.state import states
 from filemanager import register_filemanager
 from kodiremote import register_kodi_remote
+from kodirestart import register_kodi_restart
 from logger import log
 from utils import remove_empty_parents
 
@@ -50,6 +51,7 @@ async def _setup_client():
     register_handlers(client)
     register_filemanager(client)
     register_kodi_remote(client)
+    register_kodi_restart(client)
     await client.start(bot_token=config.BOT_TOKEN)
     try:  # Explicit catch-up so we know backlog is processed before announcing ready.
         await client.catch_up()

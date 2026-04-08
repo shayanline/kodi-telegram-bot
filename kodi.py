@@ -44,6 +44,12 @@ async def play(filepath: str) -> None:
     await _rpc("Player.Open", {"item": {"file": filepath}})
 
 
+async def quit_kodi() -> None:
+    """Send Application.Quit to shut down Kodi."""
+    log.info("Sending Application.Quit")
+    await _rpc("Application.Quit")
+
+
 async def is_playing() -> bool:
     data = await _rpc("Player.GetActivePlayers") or {}
     playing = bool(data.get("result"))
@@ -151,6 +157,7 @@ __all__ = [
     "play",
     "play_pause",
     "progress_notify",
+    "quit_kodi",
     "seek_step",
     "set_volume",
     "stop_player",

@@ -48,7 +48,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["config", "kodi", "kodiremote", "utils", "organizer", "logger", "downloader", "filemanager"]
+known-first-party = ["config", "kodi", "kodiremote", "kodirestart", "utils", "organizer", "logger", "downloader", "filemanager"]
 
 [tool.ruff.format]
 quote-style = "double"

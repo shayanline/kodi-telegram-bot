@@ -91,6 +91,7 @@ Copy `.env.example` to `.env` and fill in the values. The three Telegram variabl
 | `KODI_URL` | `http://localhost:8080/jsonrpc` | Kodi JSON RPC endpoint |
 | `KODI_USERNAME` | `kodi` | Kodi HTTP username |
 | `KODI_PASSWORD` | *(blank)* | Kodi HTTP password |
+| `KODI_START_CMD` | *(blank)* | Shell command to start Kodi. Required for `/restart_kodi`. Example: `systemctl start cec-kodi-launcher.service` |
 | `DOWNLOAD_DIR` | `~/Downloads` | Storage root, created if missing |
 | `ORGANIZE_MEDIA` | `1` | `1` to sort into Movies/Series/Other, `0` for flat storage |
 | `MAX_RETRY_ATTEMPTS` | `3` | Retry count per download on transient errors |
@@ -120,6 +121,8 @@ Start the bot with `python main.py`. It only responds to private messages.
 | `/downloads` | Detailed active downloads list |
 | `/queue` | Detailed queued downloads list |
 | `/files` | Browse and manage downloaded files |
+| `/kodi` | Interactive remote control for Kodi |
+| `/restart_kodi` | Quit and restart Kodi (requires `KODI_START_CMD`) |
 
 ### Inline Controls
 
@@ -168,6 +171,8 @@ main.py              startup, graceful shutdown
 config.py            env loading and validation
 utils.py             media detection, disk/memory helpers
 kodi.py              thin JSON RPC wrapper (notify, play, status)
+kodiremote.py        interactive remote control via inline buttons
+kodirestart.py       /restart_kodi command with confirmation
 organizer.py         filename parsing, categorization, final path builder
 filemanager.py       interactive file browser and deletion via Telegram
 logger.py            truncating file logger with size cap

@@ -16,6 +16,7 @@ kodi.py            → thin JSON-RPC wrapper (notify / play / status / controls 
 organizer.py       → filename parsing, categorization & final path builder
 filemanager.py     → interactive file browser & deletion via Telegram
 kodiremote.py      → Kodi remote control UI via inline buttons (/kodi)
+kodirestart.py     → /restart_kodi command with confirmation prompt
 logger.py          → truncating file logger with size cap
 downloader/
    queue.py        → concurrency + FIFO queue worker

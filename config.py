@@ -67,6 +67,8 @@ MOVIES_DIR_NAME: str = "Movies"
 SERIES_DIR_NAME: str = "Series"
 OTHER_DIR_NAME: str = "Other"
 
+KODI_START_CMD: str = os.getenv("KODI_START_CMD", "").strip()
+
 MAX_RETRY_ATTEMPTS: int = _env_int("MAX_RETRY_ATTEMPTS", 3)
 MAX_CONCURRENT_DOWNLOADS: int = _env_int("MAX_CONCURRENT_DOWNLOADS", 5)
 MIN_FREE_DISK_MB: int = _env_int("MIN_FREE_DISK_MB", 200)
@@ -101,6 +103,7 @@ __all__ = [
     "DISK_WARNING_MB",
     "DOWNLOAD_DIR",
     "KODI_AUTH",
+    "KODI_START_CMD",
     "KODI_URL",
     "MAX_CONCURRENT_DOWNLOADS",
     "MAX_RETRY_ATTEMPTS",
