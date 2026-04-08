@@ -71,9 +71,9 @@ Optionally set a port (default 8080), username, and password. You will use these
 ```bash
 git clone https://github.com/shemekhe/kodi-telegram-bot.git
 cd kodi-telegram-bot
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env   # then edit .env with your values
+pip install uv            # one-time install
+uv sync                   # creates .venv and installs all dependencies
+cp .env.example .env      # then edit .env with your values
 python main.py
 ```
 
@@ -222,16 +222,19 @@ sudo apt update
 sudo apt install -y python3 python3-venv git
 ```
 
+### Install uv
+
+```sh
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
 ### Clone and Install
 
 ```sh
 cd /home/pi
 git clone https://github.com/shemekhe/kodi-telegram-bot.git
 cd kodi-telegram-bot
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
+uv sync
 cp .env.example .env  # then edit .env with your values
 ```
 
@@ -284,8 +287,7 @@ To update to the latest version:
 ```sh
 cd /home/pi/kodi-telegram-bot
 git pull
-source .venv/bin/activate
-pip install -r requirements.txt
+uv sync
 sudo systemctl restart kodi-telegram-bot
 ```
 
@@ -306,7 +308,7 @@ Pull requests and small improvements are welcome.
 
 1. Keep functions small and focused.
 2. Avoid adding heavy dependencies.
-3. Run `pytest -q` before submitting.
+3. Run `uv run pytest -q` before submitting.
 4. Prefer clarity over cleverness.
 
 ## Troubleshooting
