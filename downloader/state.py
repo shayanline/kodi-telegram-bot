@@ -59,6 +59,7 @@ class DownloadState:
     paused: bool = False
     cancelled: bool = False
     completed: bool = False
+    confirming_cancel: bool = False
     last_text: str = ""
     downloaded_bytes: int = 0
     progress_percent: int = 0

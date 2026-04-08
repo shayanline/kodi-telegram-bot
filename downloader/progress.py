@@ -77,7 +77,7 @@ def create_progress_callback(filename: str, start: float, rate: RateLimiter, msg
         if state:
             state.update_progress(received, percent, speed)
 
-        if rate.telegram_ok():
+        if not (state and state.confirming_cancel) and rate.telegram_ok():
             await send_tg_update(percent, received, total, speed)
 
         if percent > 0 and percent % 10 == 0 and rate.kodi_ok() and not await kodi.is_playing():

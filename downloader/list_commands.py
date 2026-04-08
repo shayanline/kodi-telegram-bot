@@ -38,6 +38,10 @@ def _register_downloads_handler(client: TelegramClient):
             await event.respond("🛑 Not authorized.")
             return
 
+        warning = utils.memory_warning_message(config.MEMORY_WARNING_PERCENT)
+        if warning:
+            await event.respond(warning)
+
         if not states:
             text = "📁 No active downloads"
             buttons = [[Button.inline("🔄 Refresh", data="refresh_downloads")]]
@@ -66,6 +70,10 @@ def _register_queue_handler(client: TelegramClient):
         if not config.is_user_allowed(user_id, username):
             await event.respond("🛑 Not authorized.")
             return
+
+        warning = utils.memory_warning_message(config.MEMORY_WARNING_PERCENT)
+        if warning:
+            await event.respond(warning)
 
         if not queue.items:
             text = "📝 No queued downloads"

@@ -1,5 +1,6 @@
 import asyncio
 
+from downloader.ids import get_file_id
 from downloader.progress import RateLimiter, create_progress_callback
 from downloader.queue import DownloadQueue, QueuedItem
 from downloader.queue import queue as global_queue
@@ -97,6 +98,87 @@ def test_queued_cancel_ui(monkeypatch):
     # Simulate what handler does
     asyncio.run(stub.edit(f"🛑 Cancelled (queued): {qi.filename}", buttons=None))
     assert "Cancelled" in (stub.last or "")
+
+
+def test_confirming_cancel_sets_flag():
+    """Clicking cancel sets confirming_cancel on the state."""
+    st = DownloadState("confirm.bin", "/tmp/confirm.bin", 1000)
+    assert st.confirming_cancel is False
+    st.confirming_cancel = True
+    assert st.confirming_cancel is True
+    # Confirming cancel does not mark as cancelled
+    assert st.cancelled is False
+
+
+def test_confirming_cancel_then_confirm():
+    """Confirming the cancel prompt marks the download as cancelled."""
+    st = DownloadState("confirmed.bin", "/tmp/confirmed.bin", 1000)
+    st.confirming_cancel = True
+    # Simulate "Yes, Cancel" handler
+    st.confirming_cancel = False
+    st.mark_cancelled()
+    assert st.cancelled is True
+    assert st.confirming_cancel is False
+
+
+def test_confirming_cancel_then_decline():
+    """Declining the cancel prompt clears the flag without cancelling."""
+    st = DownloadState("declined.bin", "/tmp/declined.bin", 1000)
+    st.update_progress(500, 50, "1 MB/s")
+    st.confirming_cancel = True
+    # Simulate "No, Go Back" handler
+    st.confirming_cancel = False
+    assert st.cancelled is False
+    assert st.confirming_cancel is False
+    # Progress text still available
+    assert "50%" in st.get_progress_text()
+
+
+def test_progress_skips_telegram_during_confirmation():
+    """Progress callback skips Telegram edits when confirming_cancel is set."""
+
+    async def _inner():
+        st = DownloadState("skip.bin", "/tmp/skip.bin", 1000)
+        msg = DummyMsg()
+        rate = RateLimiter(min_tg=0, min_kodi=9999)
+        cb = create_progress_callback(st.filename, 0.0, rate, msg, st)
+
+        # Normal progress update should edit the message
+        await cb(100, 1000)
+        assert msg.last is not None
+        first_text = msg.last
+
+        # Set confirming_cancel — Telegram edits should be suppressed
+        st.confirming_cancel = True
+        msg.last = None
+        await cb(500, 1000)
+        assert msg.last is None  # no Telegram edit during confirmation
+
+        # State progress still updated even when Telegram edits are skipped
+        assert st.progress_percent == 50
+
+        # Clear flag — edits resume
+        st.confirming_cancel = False
+        await cb(800, 1000)
+        assert msg.last is not None
+        assert msg.last != first_text
+
+    asyncio.run(_inner())
+
+
+def test_cancel_confirm_file_id_roundtrip():
+    """File ID for cancel confirmation callbacks resolves correctly."""
+    filename = "roundtrip.mp4"
+    fid = register_file_id(filename)
+    try:
+        from downloader.state import resolve_file_id
+
+        assert resolve_file_id(fid) == filename
+        # cy: and cn: callback data would contain this file_id
+        assert f"cy:{fid}" == f"cy:{get_file_id(filename)}"
+        assert f"cn:{fid}" == f"cn:{get_file_id(filename)}"
+    finally:
+        file_id_map.pop(fid, None)
 
 
 def test_run():  # entry point to ensure file executes, minimal smoke

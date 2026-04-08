@@ -790,6 +790,9 @@ def _register_start_handler(client: TelegramClient):
         if not config.is_user_allowed(getattr(sender, "id", None), getattr(sender, "username", None)):
             await event.respond("🛑 Not authorized.")
             return
+        warning = utils.memory_warning_message(config.MEMORY_WARNING_PERCENT)
+        if warning:
+            await event.respond(warning)
         await event.respond(HELP_TEXT)
 
 
@@ -812,7 +815,9 @@ async def _register_bot_commands(client: TelegramClient):
 
 def _register_control_callbacks(client: TelegramClient):
     _register_pause_resume_cancel(client)
+    _register_cancel_confirm(client)
     _register_qcancel(client)
+    _register_qcancel_confirm(client)
     _register_category_selection(client)
     _register_deletion_callbacks(client)
 
@@ -863,11 +868,19 @@ def _register_pause_resume_cancel(client: TelegramClient):
             await event.answer("Resuming")
 
     async def _do_cancel(st, event):
-        st.mark_cancelled()
-        await _update_progress_message(st, "🛑 Cancelling")
-        await _update_tracked_messages(st.filename, st)
+        file_id = get_file_id(st.filename)
+        st.confirming_cancel = True
+        text = f"⚠️ **Cancel this download?**\n\n{st.filename}"
+        buttons = [
+            [
+                Button.inline("✅ Yes, Cancel", data=f"cy:{file_id}"),
+                Button.inline("❌ No, Go Back", data=f"cn:{file_id}"),
+            ]
+        ]
         with contextlib.suppress(Exception):
-            await event.answer("Cancelling")
+            await event.edit(text, buttons=buttons)
+        with contextlib.suppress(Exception):
+            await event.answer()
 
     @client.on(events.CallbackQuery(pattern=pattern))
     async def _prc(event):
@@ -890,6 +903,42 @@ def _register_pause_resume_cancel(client: TelegramClient):
             await _do_cancel(st, event)
 
 
+def _register_cancel_confirm(client: TelegramClient):
+    @client.on(events.CallbackQuery(pattern=b"c(y|n):"))
+    async def _cancel_confirm(event):
+        data = event.data.decode()
+        action, file_id = data.split(":", 1)
+        filename = resolve_file_id(file_id)
+        if not filename:
+            with contextlib.suppress(Exception):
+                await event.answer(_NOT_FOUND, alert=False)
+            return
+        st = states.get(filename)
+        if not st:
+            with contextlib.suppress(Exception):
+                await event.answer(_NOT_FOUND, alert=False)
+            return
+        st.confirming_cancel = False
+        if action == "cy":
+            st.mark_cancelled()
+            with contextlib.suppress(Exception):
+                await event.edit(f"🛑 Cancelling: {st.filename}", buttons=None)
+            await _update_tracked_messages(filename, st)
+            with contextlib.suppress(Exception):
+                await event.answer("Cancelling")
+        else:
+            status = get_status_text(st)
+            progress_text = st.get_progress_text()
+            text = f"{status}: {st.filename}"
+            if progress_text:
+                text += f"\n{progress_text}"
+            buttons = build_buttons(st)
+            with contextlib.suppress(Exception):
+                await event.edit(text, buttons=buttons)
+            with contextlib.suppress(Exception):
+                await event.answer()
+
+
 def _register_qcancel(client: TelegramClient):
     @client.on(events.CallbackQuery(pattern=b"qcancel:"))
     async def _qcancel(event):
@@ -905,38 +954,78 @@ def _register_qcancel(client: TelegramClient):
                 await event.answer(_NOT_FOUND, alert=False)
             return
 
-        # Update progress/queued messages for this file
-        for tracked in message_tracker.get_messages(filename):
-            if tracked.message_type in (MessageType.PROGRESS, MessageType.QUEUED):
-                with contextlib.suppress(Exception):
-                    await tracked.message.edit(
-                        f"🛑 Cancelled: {filename}\nThis download was cancelled from the queue.",
-                        buttons=None,
-                    )
-
-        # Snapshot list messages before cancel modifies queue
-        list_messages = message_tracker.get_all_list_messages()
-
-        queue.cancel(filename)
-
-        for tracked in list_messages:
-            if tracked.message_type == MessageType.QUEUE_LIST:
-                try:
-                    if queue.items:
-                        text, buttons = build_queue_list(queue.items)
-                        await tracked.message.edit(text, buttons=buttons)
-                    else:
-                        await tracked.message.edit(
-                            "📝 No queued downloads",
-                            buttons=[[Button.inline("🔄 Refresh", data="refresh_queue")]],
-                        )
-                except Exception:
-                    pass
-
-        message_tracker.cleanup_file(filename)
-        file_id_map.pop(file_id, None)
+        text = f"⚠️ **Cancel this queued download?**\n\n{filename}"
+        buttons = [
+            [
+                Button.inline("✅ Yes, Cancel", data=f"qcy:{file_id}"),
+                Button.inline("❌ No, Go Back", data=f"qcn:{file_id}"),
+            ]
+        ]
         with contextlib.suppress(Exception):
-            await event.answer("Cancelled")
+            await event.edit(text, buttons=buttons)
+        with contextlib.suppress(Exception):
+            await event.answer()
+
+
+def _register_qcancel_confirm(client: TelegramClient):
+    @client.on(events.CallbackQuery(pattern=b"qc(y|n):"))
+    async def _qcancel_confirm(event):
+        data = event.data.decode()
+        action, file_id = data.split(":", 1)
+        filename = resolve_file_id(file_id)
+        if not filename:
+            with contextlib.suppress(Exception):
+                await event.answer(_NOT_FOUND, alert=False)
+            return
+
+        if action == "qcy":
+            qi = queue.items.get(filename)
+            if not (qi and not qi.cancelled):
+                with contextlib.suppress(Exception):
+                    await event.answer(_NOT_FOUND, alert=False)
+                return
+
+            for tracked in message_tracker.get_messages(filename):
+                if tracked.message_type in (MessageType.PROGRESS, MessageType.QUEUED):
+                    with contextlib.suppress(Exception):
+                        await tracked.message.edit(
+                            f"🛑 Cancelled: {filename}\nThis download was cancelled from the queue.",
+                            buttons=None,
+                        )
+
+            list_messages = message_tracker.get_all_list_messages()
+            queue.cancel(filename)
+
+            for tracked in list_messages:
+                if tracked.message_type == MessageType.QUEUE_LIST:
+                    try:
+                        if queue.items:
+                            text, buttons = build_queue_list(queue.items)
+                            await tracked.message.edit(text, buttons=buttons)
+                        else:
+                            await tracked.message.edit(
+                                "📝 No queued downloads",
+                                buttons=[[Button.inline("🔄 Refresh", data="refresh_queue")]],
+                            )
+                    except Exception:
+                        pass
+
+            message_tracker.cleanup_file(filename)
+            file_id_map.pop(file_id, None)
+            with contextlib.suppress(Exception):
+                await event.answer("Cancelled")
+        else:
+            qi = queue.items.get(filename)
+            if qi and qi.file_id:
+                text = f"🕒 Queued: {filename}\nWaiting for free slot (limit {config.MAX_CONCURRENT_DOWNLOADS})"
+                buttons = [[Button.inline("🛑 Cancel", data=f"qcancel:{qi.file_id}")]]
+            else:
+                text = _NOT_FOUND
+                buttons = None
+            with contextlib.suppress(Exception):
+                await event.edit(text, buttons=buttons)
+            with contextlib.suppress(Exception):
+                await event.answer()
 
 
 def _register_deletion_callbacks(client: TelegramClient):
