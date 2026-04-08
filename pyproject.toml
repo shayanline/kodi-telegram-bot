@@ -1,6 +1,26 @@
 [project]
 name = "kodi-telegram-bot"
+version = "0.1.0"
 requires-python = ">=3.11"
+dependencies = [
+    "telethon>=1.40.1",
+    "requests>=2.32.5",
+    "psutil>=7.0.0",
+    "python-dotenv>=1.1.1",
+    "cryptg>=0.5.0",
+    "pillow>=11.2.1",
+    "aiohttp>=3.11.18",
+    "hachoir>=3.3.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2.0",
+    "pytest-cov>=6.0.0",
+    "mypy>=1.10.0",
+    "ruff>=0.8.0",
+    "types-requests>=2.33.0.20260408",
+]
 
 [tool.ruff]
 target-version = "py311"

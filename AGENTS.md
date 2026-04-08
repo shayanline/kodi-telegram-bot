@@ -85,7 +85,7 @@ Do not disable rules without a clear comment explaining why.
 mypy .
 ```
 
-Configured in `mypy.ini`. Strict optional enabled. Tests are exempt from
+Configured in `pyproject.toml`. Strict optional enabled. Tests are exempt from
 `disallow_untyped_defs`.
 
 ## Testing
@@ -129,9 +129,22 @@ All four must pass cleanly.
 
 ## Dependencies
 
-- Keep dependencies minimal. Check `requirements.txt` before adding anything.
+This project uses **uv** as the package manager. Dependencies are declared in
+`pyproject.toml` and locked in `uv.lock`.
+
+### Common commands:
+
+```bash
+uv sync                    # install all deps (including dev)
+uv add <package>           # add a runtime dependency
+uv add --dev <package>     # add a dev dependency
+uv remove <package>        # remove a dependency
+```
+
+- Keep dependencies minimal. Check `pyproject.toml` before adding anything.
 - Prefer stdlib solutions over third-party libraries when practical.
 - Pin minimum versions, not exact versions (`>=` not `==`).
+- Do **not** edit `requirements.txt` — it is no longer used.
 
 ## Style Notes
 
