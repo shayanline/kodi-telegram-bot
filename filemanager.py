@@ -120,46 +120,64 @@ def _sorted_entries(abspath: str) -> list[str]:
     return [name for _, name in sized]
 
 
-def _render_root() -> tuple[str, list[list[Button]]]:
-    """Build the root dashboard view."""
+def _render_root(page: int = 1) -> tuple[str, list[list[Button]]]:
+    """Build the root dashboard view with pagination."""
     lines = ["📂 **File Manager**", "━━━━━━━━━━━━━━━━━━━━━", _disk_bar(config.DOWNLOAD_DIR), ""]
     buttons: list[list[Button]] = []
 
     entries = _sorted_entries(config.DOWNLOAD_DIR)
     if not entries:
         lines.append("📭 Download folder is empty")
-        buttons.append([Button.inline("🔄 Refresh", data="f:r")])
+        buttons.append([Button.inline("🔄 Refresh", data="f:r:1")])
         return "\n".join(lines), buttons
 
-    for name in entries:
+    total_items = len(entries)
+    total_pages = max(1, (total_items + _ITEMS_PER_PAGE - 1) // _ITEMS_PER_PAGE)
+    page = max(1, min(page, total_pages))
+
+    page_info = f"  (page {page}/{total_pages})" if total_pages > 1 else ""
+    lines.append(f"{total_items} item{'s' if total_items != 1 else ''}{page_info}")
+    lines.append("")
+
+    start = (page - 1) * _ITEMS_PER_PAGE
+    page_entries = entries[start : start + _ITEMS_PER_PAGE]
+
+    for i, name in enumerate(page_entries, start=start + 1):
         full = os.path.join(config.DOWNLOAD_DIR, name)
         if os.path.isdir(full):
             count, total = _dir_summary(full)
-            lines.append(f"📁 {name} — {count} item{'s' if count != 1 else ''}, {utils.humanize_size(total)}")
+            lines.append(f"{i}. 📁 {name} — {count} item{'s' if count != 1 else ''}, {utils.humanize_size(total)}")
         else:
             try:
                 sz = os.path.getsize(full)
             except OSError:
                 sz = 0
-            lines.append(f"📄 {name} — {utils.humanize_size(sz)}")
+            lines.append(f"{i}. 📄 {name} — {utils.humanize_size(sz)}")
 
     row: list[Button] = []
-    for name in entries:
+    for i, name in enumerate(page_entries, start=start + 1):
         pid = _path_id(name)
         full = os.path.join(config.DOWNLOAD_DIR, name)
         is_dir = os.path.isdir(full)
-        label = f"📁 {name}" if is_dir else f"📄 {name}"
-        if len(label) > 32:
-            label = label[:29] + "..."
+        label = f"{i} 📁" if is_dir else f"{i} 📄"
         data = f"f:n:{pid}:1" if is_dir else f"f:i:{pid}"
         row.append(Button.inline(label, data=data))
-        if len(row) >= 3:
+        if len(row) >= _ITEMS_PER_PAGE:
             buttons.append(row)
             row = []
     if row:
         buttons.append(row)
 
-    buttons.append([Button.inline("🔄 Refresh", data="f:r")])
+    if total_pages > 1:
+        pag_row: list[Button] = []
+        if page > 1:
+            pag_row.append(Button.inline(f"◀️ {page - 1}", data=f"f:r:{page - 1}"))
+        pag_row.append(Button.inline(f"{page}/{total_pages}", data="f:noop"))
+        if page < total_pages:
+            pag_row.append(Button.inline(f"{page + 1} ▶️", data=f"f:r:{page + 1}"))
+        buttons.append(pag_row)
+
+    buttons.append([Button.inline("🔄 Refresh", data=f"f:r:{page}")])
     return "\n".join(lines), buttons
 
 
@@ -188,7 +206,7 @@ def _render_dir(relpath: str, page: int) -> tuple[str, list[list[Button]]]:
     if not entries:
         lines.append("📭 Empty folder")
         parent_relpath = os.path.dirname(relpath)
-        back_data = f"f:n:{_path_id(parent_relpath)}:1" if parent_relpath else "f:r"
+        back_data = f"f:n:{_path_id(parent_relpath)}:1" if parent_relpath else "f:r:1"
         buttons.append(
             [Button.inline("⬅️ Back", data=back_data), Button.inline("🗑 Delete Folder", data=f"f:d:{pid_self}")]
         )
@@ -234,7 +252,7 @@ def _render_dir(relpath: str, page: int) -> tuple[str, list[list[Button]]]:
         buttons.append(pag_row)
 
     parent_relpath = os.path.dirname(relpath)
-    back_data = f"f:n:{_path_id(parent_relpath)}:1" if parent_relpath else "f:r"
+    back_data = f"f:n:{_path_id(parent_relpath)}:1" if parent_relpath else "f:r:1"
     bottom: list[Button] = [Button.inline("⬅️ Back", data=back_data)]
     if not _is_protected_recursive(abspath):
         bottom.append(Button.inline("🗑 Delete All", data=f"f:d:{pid_self}"))
@@ -254,7 +272,7 @@ def _render_file(relpath: str) -> tuple[str, list[list[Button]]]:
         sz = stat.st_size
         mtime = datetime.fromtimestamp(stat.st_mtime, tz=UTC).strftime("%Y-%m-%d %H:%M")
     except OSError:
-        return "❌ File not found", [[Button.inline("⬅️ Back", data="f:r")]]
+        return "❌ File not found", [[Button.inline("⬅️ Back", data="f:r:1")]]
 
     protected = _is_protected(abspath)
 
@@ -264,7 +282,7 @@ def _render_file(relpath: str) -> tuple[str, list[list[Button]]]:
 
     pid = _path_id(relpath)
     parent_relpath = os.path.dirname(relpath)
-    back_data = f"f:n:{_path_id(parent_relpath)}:1" if parent_relpath else "f:r"
+    back_data = f"f:n:{_path_id(parent_relpath)}:1" if parent_relpath else "f:r:1"
 
     buttons: list[list[Button]] = []
     if protected:
@@ -301,7 +319,7 @@ def _render_delete_confirm(relpath: str) -> tuple[str, list[list[Button]]]:
             "This action cannot be undone.",
         ]
     else:
-        return "❌ Path not found", [[Button.inline("⬅️ Back", data="f:r")]]
+        return "❌ Path not found", [[Button.inline("⬅️ Back", data="f:r:1")]]
 
     buttons = [[Button.inline("✅ Yes, Delete", data=f"f:y:{pid}"), Button.inline("❌ No, Go Back", data=f"f:x:{pid}")]]
     return "\n".join(lines), buttons
@@ -354,9 +372,10 @@ def _register_files_command(client: TelegramClient) -> None:
 
 
 def _register_callbacks(client: TelegramClient) -> None:
-    @client.on(events.CallbackQuery(pattern=b"f:r"))
+    @client.on(events.CallbackQuery(pattern=rb"f:r:(\d+)"))
     async def _root(event):
-        text, buttons = _render_root()
+        page = int(event.pattern_match.group(1).decode())
+        text, buttons = _render_root(page)
         await _safe_edit(event, text, buttons)
         await event.answer()
 

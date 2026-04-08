@@ -408,11 +408,12 @@ def test_register_filemanager_callable():
 # ── Render root with many entries ──
 
 
-def test_render_root_truncates_long_names(tmp_path):
+def test_render_root_numbered_buttons(tmp_path):
     long_name = "A" * 40
     (tmp_path / long_name).mkdir()
     with _patch_download_dir(tmp_path):
         _text, buttons = filemanager._render_root()
+        # Buttons should use compact numbered labels, not full names
         for row in buttons:
             for b in row:
                 label = b.text if hasattr(b, "text") else ""
@@ -442,7 +443,7 @@ def test_render_dir_back_to_root(tmp_path):
         _text, buttons = filemanager._render_dir("Top", 1)
         bottom_row = buttons[-1]
         back_btn = bottom_row[0]
-        assert back_btn.data == b"f:r"
+        assert back_btn.data == b"f:r:1"
 
 
 # ── Render file back to parent ──
@@ -491,6 +492,55 @@ def test_render_root_mixed(tmp_path):
         assert "loose.mp4" in text
         # At least nav buttons + refresh
         assert len(buttons) >= 2
+
+
+# ── Root pagination ──
+
+
+def test_render_root_pagination(tmp_path):
+    """Root view paginates when entries exceed _ITEMS_PER_PAGE."""
+    items = {f"folder_{i:02d}": {"file.mkv": 100 * (20 - i)} for i in range(20)}
+    _make_tree(tmp_path, items)
+    with _patch_download_dir(tmp_path):
+        text_p1, _ = filemanager._render_root(1)
+        assert "page 1/" in text_p1
+        assert "20 items" in text_p1
+
+        text_p2, _ = filemanager._render_root(2)
+        assert "page 2/" in text_p2
+
+
+def test_render_root_pagination_all_items(tmp_path):
+    """All items appear exactly once across paginated root pages."""
+    n = 13
+    items = {f"dir_{i:02d}": {"f.dat": 100 - i} for i in range(n)}
+    _make_tree(tmp_path, items)
+    with _patch_download_dir(tmp_path):
+        seen = set()
+        pages = (n + filemanager._ITEMS_PER_PAGE - 1) // filemanager._ITEMS_PER_PAGE
+        for p in range(1, pages + 1):
+            text, _ = filemanager._render_root(p)
+            for line in text.splitlines():
+                if line and line[0].isdigit() and "📁" in line:
+                    name = line.split("📁")[1].split("—")[0].strip()
+                    seen.add(name)
+        assert len(seen) == n
+
+
+def test_render_root_page_clamping(tmp_path):
+    _make_tree(tmp_path, {"one": {"f.txt": 10}})
+    with _patch_download_dir(tmp_path):
+        text, _ = filemanager._render_root(999)
+        assert "1 item" in text
+
+
+def test_render_root_message_fits_telegram_limit(tmp_path):
+    """Even with many entries, a single page stays under 4096 chars."""
+    items = {f"very_long_folder_name_{i:03d}": {"big_file.mkv": 1000} for i in range(50)}
+    _make_tree(tmp_path, items)
+    with _patch_download_dir(tmp_path):
+        text, _ = filemanager._render_root(1)
+        assert len(text) < 4096
 
 
 # ── Edge case: single-item page ──
