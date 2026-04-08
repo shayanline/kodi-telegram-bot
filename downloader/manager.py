@@ -781,6 +781,7 @@ def _register_start_handler(client: TelegramClient):
         "/downloads - show detailed active downloads list\n"
         "/queue - show detailed queued downloads list\n"
         "/files - browse and manage downloaded files\n"
+        "/kodi - Kodi remote control\n"
         "/start - this help"
     )
 
@@ -808,6 +809,7 @@ async def _register_bot_commands(client: TelegramClient):
         BotCommand("downloads", "Show active downloads"),
         BotCommand("queue", "Show queued downloads"),
         BotCommand("files", "Browse and manage files"),
+        BotCommand("kodi", "Kodi remote control"),
     ]
     with contextlib.suppress(Exception):
         await client(SetBotCommandsRequest(scope=BotCommandScopeDefault(), lang_code="", commands=commands))

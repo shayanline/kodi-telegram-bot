@@ -56,4 +56,103 @@ async def progress_notify(filename: str, percent: int, speed: str) -> None:
     await notify(f"Downloading: {filename}", f"{bar} {percent}% | {speed}/s")
 
 
-__all__ = ["is_playing", "notify", "play", "progress_notify"]
+# ── Playback controls ──
+
+
+async def get_active_player_id() -> int | None:
+    """Return the ID of the first active player, or None."""
+    data = await _rpc("Player.GetActivePlayers") or {}
+    players = data.get("result", [])
+    return players[0]["playerid"] if players else None
+
+
+async def play_pause(player_id: int) -> None:
+    await _rpc("Player.PlayPause", {"playerid": player_id})
+
+
+async def stop_player(player_id: int) -> None:
+    await _rpc("Player.Stop", {"playerid": player_id})
+
+
+async def go_previous(player_id: int) -> None:
+    await _rpc("Player.GoTo", {"playerid": player_id, "to": "previous"})
+
+
+async def go_next(player_id: int) -> None:
+    await _rpc("Player.GoTo", {"playerid": player_id, "to": "next"})
+
+
+async def seek_step(player_id: int, step: str) -> None:
+    """Seek using step value (smallforward, smallbackward, etc.)."""
+    await _rpc("Player.Seek", {"playerid": player_id, "value": step})
+
+
+async def get_player_info(player_id: int) -> dict[str, Any] | None:
+    """Get player properties (percentage, time, totaltime, speed)."""
+    data = await _rpc(
+        "Player.GetProperties",
+        {"playerid": player_id, "properties": ["percentage", "time", "totaltime", "speed"]},
+    )
+    return data.get("result") if data else None
+
+
+async def get_now_playing(player_id: int) -> str | None:
+    """Get the label of the currently playing item."""
+    data = await _rpc("Player.GetItem", {"playerid": player_id, "properties": ["title"]})
+    if not data:
+        return None
+    item = data.get("result", {}).get("item", {})
+    return item.get("label") or item.get("title")
+
+
+# ── Volume ──
+
+
+async def get_volume() -> tuple[int, bool]:
+    """Return (volume_level, is_muted)."""
+    data = await _rpc("Application.GetProperties", {"properties": ["volume", "muted"]})
+    result = data.get("result", {}) if data else {}
+    return result.get("volume", 0), result.get("muted", False)
+
+
+async def set_volume(level: int) -> None:
+    await _rpc("Application.SetVolume", {"volume": max(0, min(100, level))})
+
+
+async def toggle_mute() -> None:
+    await _rpc("Application.SetMute", {"mute": "toggle"})
+
+
+# ── Navigation / input ──
+
+_VALID_INPUT_COMMANDS = frozenset(
+    {"Up", "Down", "Left", "Right", "Select", "Back", "Home", "Info", "ContextMenu", "ShowOSD"}
+)
+
+
+async def input_command(name: str) -> None:
+    """Send an Input.{name} command (Up, Down, Left, Right, Select, etc.)."""
+    if name not in _VALID_INPUT_COMMANDS:
+        log.warning("Invalid input command: %s", name)
+        return
+    await _rpc(f"Input.{name}")
+
+
+__all__ = [
+    "get_active_player_id",
+    "get_now_playing",
+    "get_player_info",
+    "get_volume",
+    "go_next",
+    "go_previous",
+    "input_command",
+    "is_playing",
+    "notify",
+    "play",
+    "play_pause",
+    "progress_notify",
+    "seek_step",
+    "set_volume",
+    "stop_player",
+    "toggle_mute",
+]
