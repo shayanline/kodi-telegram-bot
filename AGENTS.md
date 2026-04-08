@@ -14,6 +14,7 @@ config.py          → env loading & validation
 utils.py           → media detection, disk/memory helpers
 kodi.py            → thin JSON-RPC wrapper (notify / play / status)
 organizer.py       → filename parsing, categorization & final path builder
+filemanager.py     → interactive file browser & deletion via Telegram
 logger.py          → truncating file logger with size cap
 downloader/
    queue.py        → concurrency + FIFO queue worker

@@ -12,6 +12,7 @@ import kodi
 from downloader.manager import register_handlers, validate_size
 from downloader.queue import queue
 from downloader.state import states
+from filemanager import register_filemanager
 from logger import log
 from utils import remove_empty_parents
 
@@ -46,6 +47,7 @@ async def _setup_client():
     config.validate()
     client = TelegramClient("bot", config.API_ID, config.API_HASH, catch_up=True)
     register_handlers(client)
+    register_filemanager(client)
     await client.start(bot_token=config.BOT_TOKEN)
     try:  # Explicit catch-up so we know backlog is processed before announcing ready.
         await client.catch_up()

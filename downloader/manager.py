@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from telethon import Button, TelegramClient, events
+from telethon.errors import MessageNotModifiedError
 from telethon.tl.types import Document
 
 import config
@@ -45,20 +46,49 @@ from .state import (
 # _queue_started gates one-time registration of queue worker & handlers
 _queue_started = False
 
-_NOT_FOUND = "File not found"
+_NOT_FOUND = "Download completed or no longer active"
 
 # Test hook: auto-accept deletions (bypasses interactive prompt during tests)
 TEST_AUTO_ACCEPT = False
 
-# Pending category selections: file_id -> (document, event, file_size)
-_pending_categories: dict[str, tuple[Any, Any, int]] = {}
+# Pending category selections: file_id -> (document, event, file_size, timestamp)
+_pending_categories: dict[str, tuple[Any, Any, int, float]] = {}
+_CATEGORY_TTL_SECONDS = 600  # 10 minutes
+
+# Serializes the check-then-act section in _download to prevent duplicate race conditions
+_download_lock = asyncio.Lock()
 
 
-async def _safe_edit(msg, text: str, buttons=None):
+def _prune_stale_categories():
+    """Remove pending category entries older than TTL."""
+    cutoff = time.time() - _CATEGORY_TTL_SECONDS
+    stale = [k for k, v in _pending_categories.items() if v[3] < cutoff]
+    for k in stale:
+        _pending_categories.pop(k, None)
+
+
+async def _safe_edit(msg, text: str, buttons=None, state: DownloadState | None = None):
+    """Edit a message, falling back to a new response if editing fails.
+
+    When the original message was deleted or otherwise uneditable, sends a new
+    message to the same chat and updates ``state.message`` so subsequent edits
+    target the replacement.
+    """
     try:
         await msg.edit(text, buttons=buttons)
+        return msg
+    except MessageNotModifiedError:
+        return msg
     except Exception:
-        log.debug("safe_edit failed for message update")
+        log.debug("Edit failed, sending fallback message")
+        try:
+            new_msg = await msg.respond(text, buttons=buttons)
+            if state and new_msg:
+                state.message = new_msg
+            return new_msg
+        except Exception:
+            log.debug("safe_edit: both edit and respond failed")
+            return None
 
 
 async def _update_tracked_messages(filename: str, state: DownloadState):
@@ -72,19 +102,23 @@ async def _update_tracked_messages(filename: str, state: DownloadState):
                 status = _get_status_text(state)
                 text = f"{status}: {state.filename}"
                 buttons = build_buttons(state)
-                await tracked.message.edit(text, buttons=buttons)
+                new_msg = await _safe_edit(tracked.message, text, buttons=buttons)
+                if new_msg and new_msg is not tracked.message:
+                    tracked.message = new_msg
             elif tracked.message_type == MessageType.DOWNLOAD_LIST:
                 text, buttons = _build_downloads_list(states)
-                await tracked.message.edit(text, buttons=buttons)
+                new_msg = await _safe_edit(tracked.message, text, buttons=buttons)
+                if new_msg and new_msg is not tracked.message:
+                    tracked.message = new_msg
             elif tracked.message_type == MessageType.QUEUE_LIST:
                 if queue.items:
                     text, buttons = _build_queue_list(queue.items)
-                    await tracked.message.edit(text, buttons=buttons)
                 else:
-                    await tracked.message.edit(
-                        "📝 No queued downloads",
-                        buttons=[[Button.inline("🔄 Refresh", data="refresh_queue")]],
-                    )
+                    text = "📝 No queued downloads"
+                    buttons = [[Button.inline("🔄 Refresh", data="refresh_queue")]]
+                new_msg = await _safe_edit(tracked.message, text, buttons=buttons)
+                if new_msg and new_msg is not tracked.message:
+                    tracked.message = new_msg
         except Exception:
             pass
 
@@ -349,19 +383,41 @@ async def run_download(
             except Exception:
                 pass
 
-    # Monkey-patch msg.edit to fan out updates to mirror messages
+    # Monkey-patch msg.edit to fan out updates to mirror messages with fallback
     _orig_edit = msg.edit
 
     async def _patched_edit(text: str, **kwargs):  # pragma: no cover simple wrapper
+        nonlocal _orig_edit
         try:
             r = await _orig_edit(text, **kwargs)
-        except Exception:
+        except MessageNotModifiedError:
             r = None
+        except Exception:
+            # Primary message uneditable — send a replacement
+            r = None
+            try:
+                new_msg = await msg.respond(text, **kwargs)
+                if new_msg:
+                    state.message = new_msg
+                    _orig_edit = new_msg.edit
+                    r = new_msg
+            except Exception:
+                pass
         for tracked in message_tracker.get_messages(state.filename, MessageType.PROGRESS):
-            if tracked.message.id == msg.id:
+            if state.message and tracked.message.id == state.message.id:
                 continue
-            with contextlib.suppress(Exception):
+            try:
                 await tracked.message.edit(text, **kwargs)
+            except MessageNotModifiedError:
+                pass
+            except Exception:
+                # Mirror message uneditable — send a replacement in the same chat
+                try:
+                    new_mirror = await tracked.message.respond(text, **kwargs)
+                    if new_mirror:
+                        tracked.message = new_mirror
+                except Exception:
+                    pass
         return r
 
     with contextlib.suppress(Exception):
@@ -417,7 +473,7 @@ async def _post_download_check(
     if success and validate_size(expected_size, path):
         return True
     if state.cancelled:
-        await _safe_edit(msg, f"🛑 Download cancelled: {filename}")
+        await _safe_edit(msg, f"🛑 Download cancelled: {filename}", state=state)
         if os.path.exists(path):
             try:
                 os.remove(path)
@@ -429,6 +485,7 @@ async def _post_download_check(
         await _safe_edit(
             msg,
             f"❌ Download incomplete. Expected {utils.humanize_size(expected_size)}",
+            state=state,
         )
         await kodi.notify("Download Failed", f"Incomplete: {filename}")
         log.error("Incomplete download %s", filename)
@@ -443,7 +500,7 @@ async def _handle_success(msg, filename: str, path: str, state: DownloadState) -
         if playing
         else f"✅ Download complete: {filename}\nPlaying on Kodi..."
     )
-    await _safe_edit(msg, text)
+    await _safe_edit(msg, text, state=state)
     await _update_tracked_messages(filename, state)
     if not playing:
         await kodi.play(path)
@@ -459,7 +516,7 @@ async def _handle_error(
     path: str,
 ) -> None:
     if state.cancelled:
-        await _safe_edit(msg, f"🛑 Download cancelled: {filename}")
+        await _safe_edit(msg, f"🛑 Download cancelled: {filename}", state=state)
         await _update_tracked_messages(filename, state)
         if os.path.exists(path):
             try:
@@ -469,7 +526,7 @@ async def _handle_error(
                 pass
         return
     err = str(exc)
-    await _safe_edit(msg, f"❌ Error: {err[:200]}")
+    await _safe_edit(msg, f"❌ Error: {err[:200]}", state=state)
     await kodi.notify("Download Failed", err[:50])
     log.error("Download error %s: %s", filename, err)
 
@@ -624,6 +681,7 @@ def _register_download_handler(client: TelegramClient):
         if not utils.is_media_file(document):
             await event.respond("⚠️ Only video and audio files are supported")
             return
+        _prune_stale_categories()
         original_filename = filename_for_document(document)
         # Provide message text (caption) to parser for richer extraction
         parsed = parse_filename(original_filename, text=(event.raw_text or None))
@@ -634,32 +692,35 @@ def _register_download_handler(client: TelegramClient):
         else:
             lookup_name = original_filename
 
-        active_state = states.get(lookup_name)
-        if active_state:
-            await _handle_active_duplicate(event, active_state, lookup_name)
-            return
-        queued_item = queue.items.get(lookup_name)
-        if queued_item:
-            await _handle_queued_duplicate(event, queued_item, lookup_name)
-            return
-        if ambiguous and config.ORGANIZE_MEDIA:
-            file_id = register_file_id(original_filename)
-            _pending_categories[file_id] = (document, event, document.size or 0)
-            buttons = [
-                [
-                    Button.inline("🎬 Movie", data=f"catm:{file_id}"),
-                    Button.inline("📺 Series", data=f"cats:{file_id}"),
-                    Button.inline("📁 Other", data=f"cato:{file_id}"),
+        # Lock prevents race: two events for the same file could both pass the
+        # duplicate check before either registers state, causing double downloads.
+        async with _download_lock:
+            active_state = states.get(lookup_name)
+            if active_state:
+                await _handle_active_duplicate(event, active_state, lookup_name)
+                return
+            queued_item = queue.items.get(lookup_name)
+            if queued_item:
+                await _handle_queued_duplicate(event, queued_item, lookup_name)
+                return
+            if ambiguous and config.ORGANIZE_MEDIA:
+                file_id = register_file_id(original_filename)
+                _pending_categories[file_id] = (document, event, document.size or 0, time.time())
+                buttons = [
+                    [
+                        Button.inline("🎬 Movie", data=f"catm:{file_id}"),
+                        Button.inline("📺 Series", data=f"cats:{file_id}"),
+                        Button.inline("📁 Other", data=f"cato:{file_id}"),
+                    ]
                 ]
-            ]
-            await event.respond(f"Select category for: {original_filename}", buttons=buttons)
-            return
-        pre = await pre_checks(event, text=(event.raw_text or None))
-        if not pre:
-            return
-        document, filename, size, path = pre
-        await _enqueue_or_run(client, document, filename, size, path, event)
-        log.debug("Enqueued or started %s", filename)
+                await event.respond(f"Select category for: {original_filename}", buttons=buttons)
+                return
+            pre = await pre_checks(event, text=(event.raw_text or None))
+            if not pre:
+                return
+            document, filename, size, path = pre
+            await _enqueue_or_run(client, document, filename, size, path, event)
+            log.debug("Enqueued or started %s", filename)
 
 
 def _register_status_handler(client: TelegramClient):
@@ -695,6 +756,7 @@ def _register_start_handler(client: TelegramClient):
         "/status - show active + queued downloads summary\n"
         "/downloads - show detailed active downloads list\n"
         "/queue - show detailed queued downloads list\n"
+        "/files - browse and manage downloaded files\n"
         "/start - this help"
     )
 
@@ -718,6 +780,7 @@ async def _register_bot_commands(client: TelegramClient):
         BotCommand("status", "Show downloads summary"),
         BotCommand("downloads", "Show active downloads"),
         BotCommand("queue", "Show queued downloads"),
+        BotCommand("files", "Browse and manage files"),
     ]
     with contextlib.suppress(Exception):
         await client(SetBotCommandsRequest(scope=BotCommandScopeDefault(), lang_code="", commands=commands))
@@ -793,7 +856,7 @@ def _register_pause_resume_cancel(client: TelegramClient):
         st = states.get(filename)
         if not st or st.cancelled:
             with contextlib.suppress(Exception):
-                await event.answer("Not available", alert=False)
+                await event.answer(_NOT_FOUND, alert=False)
             return
         if action == "pause":
             await _do_pause(st, event)
@@ -815,7 +878,7 @@ def _register_qcancel(client: TelegramClient):
         qi = queue.items.get(filename)
         if not (qi and not qi.cancelled):
             with contextlib.suppress(Exception):
-                await event.answer("Not found", alert=False)
+                await event.answer(_NOT_FOUND, alert=False)
             return
 
         # Update progress/queued messages for this file
@@ -896,7 +959,7 @@ def _register_category_selection(client: TelegramClient):
             with contextlib.suppress(Exception):
                 await event.answer("Selection expired", alert=False)
             return
-        document, orig_event, size = pending
+        document, orig_event, size, _ts = pending
         forced = {"catm": "movie", "cats": "series", "cato": "other"}.get(prefix)
         if not forced:
             with contextlib.suppress(Exception):

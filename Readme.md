@@ -19,6 +19,7 @@ Built to be tiny, readable, and Raspberry Pi friendly.
 - [Usage](#usage)
 - [Architecture](#architecture)
 - [Disk Space and Auto Clean](#disk-space-and-auto-clean)
+- [File Manager](#file-manager)
 - [Raspberry Pi Setup](#raspberry-pi-setup)
 - [Contributing](#contributing)
 - [Troubleshooting](#troubleshooting)
@@ -26,14 +27,6 @@ Built to be tiny, readable, and Raspberry Pi friendly.
 
 ## Features
 
-<<<<<<< HEAD
-Send the bot a media file (video or audio). It:
-1. Validates it looks like playable media.
-2. Ensures post‑download free disk space stays above a safety threshold (auto‑clean oldest files if needed).
-3. Queues or starts download (with concurrency limit).
-4. Shows progress (Telegram + optional Kodi notifications).
-5. On completion, plays it on Kodi unless Kodi is already playing something (then just stores it).
-=======
 - Video and audio detection via MIME type, Telethon attributes, and extension fallback
 - Concurrency limit with a FIFO queue and per item cancellation
 - Inline buttons for pause, resume, and cancel during downloads
@@ -41,10 +34,10 @@ Send the bot a media file (video or audio). It:
 - Auto clean of oldest files when disk space is low
 - Smart media organization into Movies, Series, and Other folders
 - Category selection buttons when a file is ambiguous
+- Interactive file manager for browsing, inspecting, and deleting files via Telegram
 - Disk and memory safety checks with gentle warnings
 - Kodi progress notifications while idle (rate limited)
 - Minimal startup and error notifications with no log spam
->>>>>>> 864abe7 (Rewrite README for clarity, structure, and readability)
 
 **Non goals:** partial resume of interrupted downloads, database persistence, and public group handling.
 
@@ -124,6 +117,9 @@ Start the bot with `python main.py`. It only responds to private messages.
 |---------|-------------|
 | `/start` | Shows help text |
 | `/status` | Lists active and queued downloads |
+| `/downloads` | Detailed active downloads list |
+| `/queue` | Detailed queued downloads list |
+| `/files` | Browse and manage downloaded files |
 
 ### Inline Controls
 
@@ -173,6 +169,7 @@ config.py            env loading and validation
 utils.py             media detection, disk/memory helpers
 kodi.py              thin JSON RPC wrapper (notify, play, status)
 organizer.py         filename parsing, categorization, final path builder
+filemanager.py       interactive file browser and deletion via Telegram
 logger.py            truncating file logger with size cap
 downloader/
   queue.py           concurrency and FIFO queue worker
@@ -192,6 +189,27 @@ Everything runs in memory. A restart is always safe.
 Before starting a download, the bot checks whether the projected free space after completion will stay above `MIN_FREE_DISK_MB`. If not, it automatically deletes the oldest files (recursively across Movies, Series, and Other) until the requirement is met. If there is still not enough space, the download is refused.
 
 A soft warning is shown when free space drops below `DISK_WARNING_MB`.
+
+## File Manager
+
+Use `/files` to open an interactive file browser inside Telegram. The entire interface lives in a single message that updates in place as you navigate.
+
+**What it shows:**
+
+- Disk usage bar with used/free space at a glance
+- Folder listing with item counts and total sizes
+- Files sorted largest first so you can quickly free space
+
+**What you can do:**
+
+- Browse into any subfolder (Movies, Series, Other, or any nested directory)
+- View file details (size, modification date)
+- Delete individual files or entire folders with a confirmation step
+- Quick-delete items directly from the listing without navigating in
+
+**Pagination** kicks in automatically for folders with more than five items. Files that are currently being downloaded are marked with a lock icon and cannot be deleted until the download completes.
+
+No extra configuration needed. The file manager works with whatever `DOWNLOAD_DIR` and `ORGANIZE_MEDIA` settings you already have.
 
 ## Raspberry Pi Setup
 
@@ -307,8 +325,4 @@ MIT. Do what you like; attribution appreciated. No warranty.
 
 ---
 
-<<<<<<< HEAD
-Happy hacking. If this helped you, a ⭐ on the repo helps others find it.
-=======
 If this project helped you, a star on the repo helps others find it.
->>>>>>> 864abe7 (Rewrite README for clarity, structure, and readability)
