@@ -551,7 +551,8 @@ def test_ensure_disk_space_enough(monkeypatch, tmp_path):
 
         return await manager._ensure_disk_space(ev, "f.mp4", 100)
 
-    assert asyncio.run(_run()) is True
+    ok, _msg = asyncio.run(_run())
+    assert ok is True
 
 
 def test_ensure_disk_space_auto_accept(monkeypatch, tmp_path):
@@ -582,7 +583,8 @@ def test_ensure_disk_space_auto_accept(monkeypatch, tmp_path):
         finally:
             manager.TEST_AUTO_ACCEPT = orig
 
-    assert asyncio.run(_run()) is True
+    ok, _msg = asyncio.run(_run())
+    assert ok is True
     assert not victim.exists()
 
 
@@ -610,7 +612,8 @@ def test_ensure_disk_space_no_double_count_with_preregistered_state(monkeypatch,
         return await manager._ensure_disk_space(ev, "pre.mp4", file_size, str(tmp_path / "pre.mp4"))
 
     try:
-        assert asyncio.run(_run()) is True
+        ok, _msg = asyncio.run(_run())
+        assert ok is True
         assert victim.exists(), "Old file should NOT be deleted when space is sufficient"
     finally:
         states.pop("pre.mp4", None)
@@ -629,7 +632,8 @@ def test_ensure_disk_space_no_candidate(monkeypatch, tmp_path):
 
         return await manager._ensure_disk_space(ev, "f.mp4", 100)
 
-    assert asyncio.run(_run()) is False
+    ok, _msg = asyncio.run(_run())
+    assert ok is False
 
 
 # ── Handler registration ──
@@ -864,7 +868,8 @@ def test_ensure_disk_space_edits_existing_message(monkeypatch, tmp_path):
 
         return await manager._ensure_disk_space(ev, "f.mp4", 100, existing_message=existing)
 
-    assert asyncio.run(_run()) is False
+    ok, _msg = asyncio.run(_run())
+    assert ok is False
     assert existing.edited is not None
     assert "no deletable files found" in existing.edited
     assert ev._responded is None
@@ -884,7 +889,8 @@ def test_ensure_disk_space_existing_message_not_touched_when_enough(monkeypatch,
 
         return await manager._ensure_disk_space(ev, "f.mp4", 100, existing_message=existing)
 
-    assert asyncio.run(_run()) is True
+    ok, _msg = asyncio.run(_run())
+    assert ok is True
     assert existing.edited is None
 
 

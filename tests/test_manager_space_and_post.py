@@ -21,7 +21,8 @@ def test_ensure_disk_space_paths(monkeypatch):
     # Generous free space -> immediate True
     monkeypatch.setattr(manager.utils, "free_disk_mb", lambda p: 5000)
     monkeypatch.setattr(config, "MIN_FREE_DISK_MB", 200)
-    assert asyncio.run(manager._ensure_disk_space(ev, "f.bin", 100 * 1024 * 1024)) is True
+    ok, _msg = asyncio.run(manager._ensure_disk_space(ev, "f.bin", 100 * 1024 * 1024))
+    assert ok is True
 
 
 def test_ensure_disk_space_interactive_auto_accept(monkeypatch, tmp_path):
@@ -36,7 +37,7 @@ def test_ensure_disk_space_interactive_auto_accept(monkeypatch, tmp_path):
     monkeypatch.setattr(manager.utils, "free_disk_mb", lambda p: frees.pop(0) if frees else 500)
     monkeypatch.setattr(config, "MIN_FREE_DISK_MB", 300)
     ev = StubEvent()
-    ok = asyncio.run(manager._ensure_disk_space(ev, "big.bin", 50 * 1024 * 1024, str(tmp_path / "big.bin")))
+    ok, _msg = asyncio.run(manager._ensure_disk_space(ev, "big.bin", 50 * 1024 * 1024, str(tmp_path / "big.bin")))
     assert ok is True
 
 
@@ -47,7 +48,7 @@ def test_ensure_disk_space_failure(monkeypatch):
     monkeypatch.setattr(config, "MIN_FREE_DISK_MB", 300)
     # Mock _select_deletion_candidate to return None (no deletion candidates found)
     monkeypatch.setattr(manager, "_select_deletion_candidate", lambda target_path, exclude: None)
-    ok = asyncio.run(manager._ensure_disk_space(ev, "file.bin", 50 * 1024 * 1024))
+    ok, _msg = asyncio.run(manager._ensure_disk_space(ev, "file.bin", 50 * 1024 * 1024))
     assert ok is False
     assert any("Not enough disk space" in m or "no deletable files found" in m for m in ev.messages)
 

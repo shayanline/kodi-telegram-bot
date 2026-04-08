@@ -149,10 +149,13 @@ class DownloadQueue:
                 if self._runner:
                     from . import manager  # local import to avoid cycle
 
-                    if not await manager._ensure_disk_space(
+                    ok, space_msg = await manager._ensure_disk_space(
                         qi.event, qi.filename, qi.size, qi.path, existing_message=qi.message
-                    ):
+                    )
+                    if not ok:
                         return
+                    if space_msg:
+                        qi.message = space_msg
                     await self._runner(client, qi)
             except Exception:
                 await throttle.send_message(qi.event, f"❌ Failed: {qi.filename}")

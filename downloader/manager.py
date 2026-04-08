@@ -222,13 +222,18 @@ def _select_deletion_candidate(target_path: str, exclude: set[str]) -> str | Non
 
 async def _ensure_disk_space(
     event, filename: str, file_size: int, path: str | None = None, existing_message: Any = None
-) -> bool:
+) -> tuple[bool, Any]:
     """Interactive disk space assurance with recursive candidate deletions.
 
     Holds the concurrency slot (caller acquires it) while waiting for user decision.
     Timeout 120s -> cancellation. TEST_AUTO_ACCEPT path auto-deletes oldest files.
     When *existing_message* is provided (e.g. the queued-slot message), prompts
     edit that message instead of sending a new one.
+
+    Returns ``(ok, prompt_message)`` where *prompt_message* is the message used
+    for interactive prompts (or *existing_message* if space was sufficient on
+    first check). Callers can pass it as ``existing_message`` to
+    :func:`run_download` so the download reuses the same Telegram message.
     """
     target_path = path or os.path.join(config.DOWNLOAD_DIR, filename)
     prompt_msg = existing_message
@@ -236,7 +241,7 @@ async def _ensure_disk_space(
         cumulative = _current_reserved_bytes(exclude=filename) + file_size
         projected = _projected_free_mb(cumulative)
         if projected >= config.MIN_FREE_DISK_MB:
-            return True
+            return True, prompt_msg
         exclude = {st.path for st in states.values()}
         exclude.add(target_path)
         candidate = _select_deletion_candidate(target_path, exclude)
@@ -247,7 +252,7 @@ async def _ensure_disk_space(
             else:
                 await throttle.send_message(event, no_space, reply_to=getattr(event, "id", None))
             log.error("No candidate for deletion; cancelling %s", filename)
-            return False
+            return False, None
         cand_name = os.path.basename(candidate)
 
         if TEST_AUTO_ACCEPT:
@@ -282,7 +287,7 @@ async def _ensure_disk_space(
             )
         if not pending.message:
             pending_deletions.pop(pid, None)
-            return False
+            return False, None
         prompt_msg = pending.message
         try:
             await asyncio.wait_for(pending.future, timeout=120)
@@ -294,14 +299,14 @@ async def _ensure_disk_space(
                 pass
             pending_deletions.pop(pid, None)
             log.warning("Deletion prompt timeout for %s", filename)
-            return False
+            return False, None
         choice = pending.choice
         pending_deletions.pop(pid, None)
         if choice != "yes":
             if pending.message:
                 await _safe_edit(pending.message, f"🛑 Cancelled: insufficient space for {filename}")
             log.info("User declined deletion for %s", filename)
-            return False
+            return False, None
         with contextlib.suppress(OSError):
             os.remove(candidate)
         if pending.message:
@@ -675,10 +680,11 @@ async def _start_direct_download(client: TelegramClient, event, document, filena
             if st and st.cancelled:
                 _final_cleanup(filename)
                 return
-            if not await _ensure_disk_space(event, filename, size, path):
+            ok, space_msg = await _ensure_disk_space(event, filename, size, path)
+            if not ok:
                 _final_cleanup(filename)
                 return
-            await run_download(client, event, document, filename, size, path)
+            await run_download(client, event, document, filename, size, path, existing_message=space_msg)
     except Exception:
         if filename in states:
             _final_cleanup(filename)
