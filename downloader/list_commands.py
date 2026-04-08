@@ -202,7 +202,7 @@ def build_downloads_list(active_states):
             row_buttons.append(Button.inline("▶️ Resume", data=f"resume:{file_id}"))
         else:
             row_buttons.append(Button.inline("⏸️ Pause", data=f"pause:{file_id}"))
-        row_buttons.append(Button.inline("🛑 Cancel", data=f"cancel:{file_id}"))
+        row_buttons.append(Button.inline("🛑 Cancel", data=f"lcancel:{file_id}"))
         buttons.append(row_buttons)
 
     if len(lines) == 1:
@@ -220,7 +220,7 @@ def build_queue_list(queue_items):
     for i, (filename, qi) in enumerate(queue_items.items(), 1):
         lines.append(f"**{i}.** 🕒 {filename}")
         if qi.file_id:
-            buttons.append([Button.inline("🛑 Cancel", data=f"qcancel:{qi.file_id}")])
+            buttons.append([Button.inline("🛑 Cancel", data=f"lqcancel:{qi.file_id}")])
         else:
             buttons.append([Button.inline("❌ No Action", data="no_action")])
 

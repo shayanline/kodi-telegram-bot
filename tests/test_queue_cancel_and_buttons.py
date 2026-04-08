@@ -181,6 +181,73 @@ def test_cancel_confirm_file_id_roundtrip():
         file_id_map.pop(fid, None)
 
 
+def test_downloads_list_cancel_button_uses_lcancel_prefix():
+    """Cancel buttons in the downloads list use 'lcancel:' prefix."""
+    from downloader.list_commands import build_downloads_list
+
+    st = DownloadState("listcancel.mp4", "/tmp/listcancel.mp4", 1000)
+    st.update_progress(500, 50, "1 MB/s")
+    states["listcancel.mp4"] = st
+    register_file_id("listcancel.mp4")
+    try:
+        _text, buttons = build_downloads_list(states)
+        cancel_datas = [
+            btn.data.decode()
+            for row in buttons
+            for btn in row
+            if hasattr(btn, "data") and btn.data and btn.data.decode().startswith("lcancel:")
+        ]
+        assert cancel_datas, "Expected lcancel: button in downloads list"
+        file_id = get_file_id("listcancel.mp4")
+        assert f"lcancel:{file_id}" in cancel_datas
+    finally:
+        states.pop("listcancel.mp4", None)
+        file_id_map.pop(get_file_id("listcancel.mp4"), None)
+
+
+def test_queue_list_cancel_button_uses_lqcancel_prefix():
+    """Cancel buttons in the queue list use 'lqcancel:' prefix."""
+    from downloader.list_commands import build_queue_list
+
+    file_id = register_file_id("queued.mp4")
+    qi = QueuedItem("queued.mp4", object(), 10, "/tmp/queued.mp4", DummyEvent(), file_id=file_id)
+    items = {"queued.mp4": qi}
+    try:
+        _text, buttons = build_queue_list(items)
+        cancel_datas = [
+            btn.data.decode()
+            for row in buttons
+            for btn in row
+            if hasattr(btn, "data") and btn.data and btn.data.decode().startswith("lqcancel:")
+        ]
+        assert cancel_datas, "Expected lqcancel: button in queue list"
+        assert f"lqcancel:{file_id}" in cancel_datas
+    finally:
+        file_id_map.pop(file_id, None)
+
+
+def test_cancel_confirm_from_list_uses_list_prefixes():
+    """Cancel confirmation from list generates cyl:/cnl: callback data."""
+    filename = "listconfirm.mp4"
+    fid = register_file_id(filename)
+    try:
+        assert f"cyl:{fid}" == f"cyl:{get_file_id(filename)}"
+        assert f"cnl:{fid}" == f"cnl:{get_file_id(filename)}"
+    finally:
+        file_id_map.pop(fid, None)
+
+
+def test_cancel_confirm_from_progress_uses_original_prefixes():
+    """Cancel confirmation from progress keeps cy:/cn: callback data."""
+    filename = "progconfirm.mp4"
+    fid = register_file_id(filename)
+    try:
+        assert f"cy:{fid}" == f"cy:{get_file_id(filename)}"
+        assert f"cn:{fid}" == f"cn:{get_file_id(filename)}"
+    finally:
+        file_id_map.pop(fid, None)
+
+
 def test_run():  # entry point to ensure file executes, minimal smoke
     test_queue_cancel_removes_item()
     test_progress_keeps_buttons()

@@ -825,7 +825,7 @@ def _register_control_callbacks(client: TelegramClient):
 
 
 def _register_pause_resume_cancel(client: TelegramClient):
-    pattern = b"(pause|resume|cancel):"
+    pattern = b"(pause|resume|cancel|lcancel):"
 
     async def _update_progress_message(state: DownloadState, status_text: str):
         """Update the primary progress message with new buttons and status."""
@@ -869,14 +869,16 @@ def _register_pause_resume_cancel(client: TelegramClient):
         with contextlib.suppress(Exception):
             await event.answer("Resuming")
 
-    async def _do_cancel(st, event):
+    async def _do_cancel(st, event, *, from_list: bool = False):
         file_id = get_file_id(st.filename)
         st.confirming_cancel = True
         text = f"⚠️ **Cancel this download?**\n\n{st.filename}"
+        yes_data = f"cyl:{file_id}" if from_list else f"cy:{file_id}"
+        no_data = f"cnl:{file_id}" if from_list else f"cn:{file_id}"
         buttons = [
             [
-                Button.inline("✅ Yes, Cancel", data=f"cy:{file_id}"),
-                Button.inline("❌ No, Go Back", data=f"cn:{file_id}"),
+                Button.inline("✅ Yes, Cancel", data=yes_data),
+                Button.inline("❌ No, Go Back", data=no_data),
             ]
         ]
         with contextlib.suppress(Exception):
@@ -901,15 +903,19 @@ def _register_pause_resume_cancel(client: TelegramClient):
             await _do_pause(st, event)
         elif action == "resume":
             await _do_resume(st, event)
-        else:  # cancel
-            await _do_cancel(st, event)
+        else:
+            await _do_cancel(st, event, from_list=(action == "lcancel"))
 
 
 def _register_cancel_confirm(client: TelegramClient):
-    @client.on(events.CallbackQuery(pattern=b"c(y|n):"))
+    @client.on(events.CallbackQuery(pattern=b"c(y|n)l?:"))
     async def _cancel_confirm(event):
         data = event.data.decode()
-        action, file_id = data.split(":", 1)
+        colon_idx = data.index(":")
+        prefix = data[:colon_idx]
+        file_id = data[colon_idx + 1 :]
+        from_list = prefix.endswith("l")
+        confirmed = prefix.startswith("cy")
         filename = resolve_file_id(file_id)
         if not filename:
             with contextlib.suppress(Exception):
@@ -921,13 +927,23 @@ def _register_cancel_confirm(client: TelegramClient):
                 await event.answer(_NOT_FOUND, alert=False)
             return
         st.confirming_cancel = False
-        if action == "cy":
+        if confirmed:
             st.mark_cancelled()
             with contextlib.suppress(Exception):
                 await event.edit(f"🛑 Cancelling: {st.filename}", buttons=None)
             await _update_tracked_messages(filename, st)
             with contextlib.suppress(Exception):
                 await event.answer("Cancelling")
+        elif from_list:
+            if states:
+                text, buttons = build_downloads_list(states)
+            else:
+                text = "📁 No active downloads"
+                buttons = [[Button.inline("🔄 Refresh", data="refresh_downloads")]]
+            with contextlib.suppress(Exception):
+                await event.edit(text, buttons=buttons)
+            with contextlib.suppress(Exception):
+                await event.answer()
         else:
             status = get_status_text(st)
             progress_text = st.get_progress_text()
@@ -942,9 +958,11 @@ def _register_cancel_confirm(client: TelegramClient):
 
 
 def _register_qcancel(client: TelegramClient):
-    @client.on(events.CallbackQuery(pattern=b"qcancel:"))
+    @client.on(events.CallbackQuery(pattern=b"l?qcancel:"))
     async def _qcancel(event):
-        file_id = event.data.decode().split(":", 1)[1]
+        data = event.data.decode()
+        from_list = data.startswith("lqcancel:")
+        file_id = data.split(":", 1)[1]
         filename = resolve_file_id(file_id)
         if not filename:
             with contextlib.suppress(Exception):
@@ -957,10 +975,12 @@ def _register_qcancel(client: TelegramClient):
             return
 
         text = f"⚠️ **Cancel this queued download?**\n\n{filename}"
+        yes_data = f"qcyl:{file_id}" if from_list else f"qcy:{file_id}"
+        no_data = f"qcnl:{file_id}" if from_list else f"qcn:{file_id}"
         buttons = [
             [
-                Button.inline("✅ Yes, Cancel", data=f"qcy:{file_id}"),
-                Button.inline("❌ No, Go Back", data=f"qcn:{file_id}"),
+                Button.inline("✅ Yes, Cancel", data=yes_data),
+                Button.inline("❌ No, Go Back", data=no_data),
             ]
         ]
         with contextlib.suppress(Exception):
@@ -970,17 +990,21 @@ def _register_qcancel(client: TelegramClient):
 
 
 def _register_qcancel_confirm(client: TelegramClient):
-    @client.on(events.CallbackQuery(pattern=b"qc(y|n):"))
+    @client.on(events.CallbackQuery(pattern=b"qc(y|n)l?:"))
     async def _qcancel_confirm(event):
         data = event.data.decode()
-        action, file_id = data.split(":", 1)
+        colon_idx = data.index(":")
+        prefix = data[:colon_idx]
+        file_id = data[colon_idx + 1 :]
+        from_list = prefix.endswith("l")
+        confirmed = prefix.startswith("qcy")
         filename = resolve_file_id(file_id)
         if not filename:
             with contextlib.suppress(Exception):
                 await event.answer(_NOT_FOUND, alert=False)
             return
 
-        if action == "qcy":
+        if confirmed:
             qi = queue.items.get(filename)
             if not (qi and not qi.cancelled):
                 with contextlib.suppress(Exception):
@@ -1016,6 +1040,16 @@ def _register_qcancel_confirm(client: TelegramClient):
             file_id_map.pop(file_id, None)
             with contextlib.suppress(Exception):
                 await event.answer("Cancelled")
+        elif from_list:
+            if queue.items:
+                text, buttons = build_queue_list(queue.items)
+            else:
+                text = "📝 No queued downloads"
+                buttons = [[Button.inline("🔄 Refresh", data="refresh_queue")]]
+            with contextlib.suppress(Exception):
+                await event.edit(text, buttons=buttons)
+            with contextlib.suppress(Exception):
+                await event.answer()
         else:
             qi = queue.items.get(filename)
             if qi and qi.file_id:
