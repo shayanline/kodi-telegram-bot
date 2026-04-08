@@ -36,6 +36,7 @@ from .state import (
     MessageType,
     PendingDeletion,
     file_id_map,
+    find_pending_deletion,
     message_tracker,
     pending_deletions,
     register_file_id,
@@ -68,6 +69,17 @@ def _prune_stale_categories():
     stale = [k for k, v in _pending_categories.items() if v[3] < cutoff]
     for k in stale:
         _pending_categories.pop(k, None)
+
+
+def _unblock_pending_deletion(filename: str) -> None:
+    """Resolve any active pending deletion future for *filename* so _ensure_disk_space unblocks."""
+    result = find_pending_deletion(filename)
+    if result:
+        _pid, pending = result
+        if not pending.future.done():
+            pending.choice = "no"
+            with contextlib.suppress(Exception):
+                pending.future.set_result(True)
 
 
 def _spawn(coro: Any) -> None:
@@ -302,6 +314,10 @@ async def _ensure_disk_space(
             return False, None
         choice = pending.choice
         pending_deletions.pop(pid, None)
+        # Check if download was cancelled while waiting (e.g. from /downloads)
+        st = states.get(filename)
+        if st and st.cancelled:
+            return False, None
         if choice != "yes":
             if pending.message:
                 await _safe_edit(pending.message, f"🛑 Cancelled: insufficient space for {filename}")
@@ -533,6 +549,35 @@ async def _handle_error(
     log.error("Download error %s: %s", filename, err)
 
 
+async def _queued_runner(client: TelegramClient, qi: QueuedItem) -> None:
+    """Runner for queued downloads: registers state for visibility, checks space, then downloads."""
+    state = _init_state(qi.filename, qi.path, qi.size, qi.event)
+    state.waiting_for_space = True
+    handle_existing_lists_for_new_download(qi.filename)
+    try:
+        ok, space_msg = await _ensure_disk_space(qi.event, qi.filename, qi.size, qi.path, existing_message=qi.message)
+        if not ok or state.cancelled:
+            _final_cleanup(qi.filename)
+            return
+        state.waiting_for_space = False
+        if space_msg:
+            qi.message = space_msg
+        await run_download(
+            client,
+            qi.event,
+            qi.document,
+            qi.filename,
+            qi.size,
+            qi.path,
+            watcher_events=qi.watcher_events or [],
+            existing_message=qi.message,
+        )
+    except Exception:
+        if qi.filename in states:
+            _final_cleanup(qi.filename)
+        raise
+
+
 # ── Handler registration ──
 
 
@@ -540,18 +585,7 @@ def register_handlers(client: TelegramClient):
     """Register Telegram handlers and start queue worker."""
     global _queue_started
     if not _queue_started:
-        queue.set_runner(
-            lambda c, qi: run_download(
-                c,
-                qi.event,
-                qi.document,
-                qi.filename,
-                qi.size,
-                qi.path,
-                watcher_events=qi.watcher_events or [],
-                existing_message=qi.message,
-            )
-        )
+        queue.set_runner(_queued_runner)
         queue.ensure_worker(client.loop, client)
         _queue_started = True
     log.debug("Queue worker started")
@@ -677,13 +711,15 @@ async def _start_direct_download(client: TelegramClient, event, document, filena
     try:
         async with queue.slot():
             st = states.get(filename)
-            if st and st.cancelled:
+            if not st or st.cancelled:
                 _final_cleanup(filename)
                 return
+            st.waiting_for_space = True
             ok, space_msg = await _ensure_disk_space(event, filename, size, path)
-            if not ok:
+            if not ok or st.cancelled:
                 _final_cleanup(filename)
                 return
+            st.waiting_for_space = False
             await run_download(client, event, document, filename, size, path, existing_message=space_msg)
     except Exception:
         if filename in states:
@@ -914,6 +950,7 @@ def _register_cancel_confirm(client: TelegramClient):
         st.confirming_cancel = False
         if confirmed:
             st.mark_cancelled()
+            _unblock_pending_deletion(filename)
             await throttle.edit_message(event, f"🛑 Cancelling: {st.filename}", buttons=None)
             await _update_tracked_messages(filename, st)
             await throttle.answer_callback(event, "Cancelling")

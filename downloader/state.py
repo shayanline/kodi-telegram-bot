@@ -60,6 +60,7 @@ class DownloadState:
     cancelled: bool = False
     completed: bool = False
     confirming_cancel: bool = False
+    waiting_for_space: bool = False
     last_text: str = ""
     downloaded_bytes: int = 0
     progress_percent: int = 0
@@ -174,6 +175,14 @@ class PendingDeletion:
 pending_deletions: dict[str, PendingDeletion] = {}
 
 
+def find_pending_deletion(filename: str) -> tuple[str, PendingDeletion] | None:
+    """Find the active pending deletion prompt for a download filename."""
+    for pid, pd in pending_deletions.items():
+        if pd.filename == filename and not pd.future.done():
+            return pid, pd
+    return None
+
+
 __all__ = [
     "CancelledDownload",
     "DownloadState",
@@ -182,6 +191,7 @@ __all__ = [
     "PendingDeletion",
     "TrackedMessage",
     "file_id_map",
+    "find_pending_deletion",
     "message_tracker",
     "pending_deletions",
     "register_file_id",

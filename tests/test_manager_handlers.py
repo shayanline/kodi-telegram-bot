@@ -986,3 +986,129 @@ def test_qcancel_decline_shows_active_state():
         states.pop(filename, None)
         file_id_map.pop(file_id, None)
         client.loop.close()
+
+
+# ── find_pending_deletion ──
+
+
+def test_find_pending_deletion_found():
+    """find_pending_deletion returns (pid, pending) when a match exists."""
+    from downloader.state import PendingDeletion, find_pending_deletion, pending_deletions
+
+    async def _run():
+        pd = PendingDeletion(filename="target.mp4", candidate="old.mkv")
+        pending_deletions["findme"] = pd
+        try:
+            result = find_pending_deletion("target.mp4")
+            assert result is not None
+            pid, found = result
+            assert pid == "findme"
+            assert found.candidate == "old.mkv"
+        finally:
+            pending_deletions.pop("findme", None)
+
+    asyncio.run(_run())
+
+
+def test_find_pending_deletion_not_found():
+    """find_pending_deletion returns None when no match."""
+    from downloader.state import find_pending_deletion, pending_deletions
+
+    orig = dict(pending_deletions)
+    pending_deletions.clear()
+    try:
+        assert find_pending_deletion("nonexistent.mp4") is None
+    finally:
+        pending_deletions.update(orig)
+
+
+def test_find_pending_deletion_skips_done_future():
+    """find_pending_deletion skips entries with already-resolved futures."""
+    from downloader.state import PendingDeletion, find_pending_deletion, pending_deletions
+
+    async def _run():
+        pd = PendingDeletion(filename="done.mp4", candidate="old.mkv")
+        pd.future.set_result(True)
+        pending_deletions["done_pid"] = pd
+        try:
+            assert find_pending_deletion("done.mp4") is None
+        finally:
+            pending_deletions.pop("done_pid", None)
+
+    asyncio.run(_run())
+
+
+# ── _unblock_pending_deletion ──
+
+
+def test_unblock_pending_deletion_resolves_future():
+    """_unblock_pending_deletion resolves the future with choice='no'."""
+    from downloader.manager import _unblock_pending_deletion
+    from downloader.state import PendingDeletion, pending_deletions
+
+    async def _run():
+        pd = PendingDeletion(filename="block.mp4", candidate="old.mkv")
+        pending_deletions["block_pid"] = pd
+        try:
+            _unblock_pending_deletion("block.mp4")
+            assert pd.future.done()
+            assert pd.choice == "no"
+        finally:
+            pending_deletions.pop("block_pid", None)
+
+    asyncio.run(_run())
+
+
+def test_unblock_pending_deletion_noop_when_no_match():
+    """_unblock_pending_deletion does nothing when no pending deletion exists."""
+    from downloader.manager import _unblock_pending_deletion
+    from downloader.state import pending_deletions
+
+    orig = dict(pending_deletions)
+    pending_deletions.clear()
+    try:
+        _unblock_pending_deletion("nothing.mp4")  # should not raise
+    finally:
+        pending_deletions.update(orig)
+
+
+# ── _ensure_disk_space respects cancelled state ──
+
+
+def test_ensure_disk_space_returns_false_when_cancelled(monkeypatch, tmp_path):
+    """After future resolves, if state is cancelled, _ensure_disk_space returns False cleanly."""
+    from downloader.state import PendingDeletion
+
+    monkeypatch.setattr(config, "DOWNLOAD_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "MIN_FREE_DISK_MB", 999999)
+    monkeypatch.setattr(config, "ORGANIZE_MEDIA", False)
+    monkeypatch.setattr(utils, "free_disk_mb", lambda _: 1)
+    # Create a candidate file
+    (tmp_path / "old.bin").write_bytes(b"x" * 100)
+
+    ev = FakeEvent()
+
+    async def _run():
+        from downloader import manager
+
+        # Create a state and mark it cancelled
+        st = DownloadState("cancel.mp4", str(tmp_path / "cancel.mp4"), 100)
+        st.cancelled = True
+        states["cancel.mp4"] = st
+        try:
+            # Monkeypatch: make the pending deletion auto-resolve on creation
+            orig_init = PendingDeletion.__post_init__
+
+            def patched_init(self):
+                orig_init(self)
+                self.choice = "no"
+                self.future.set_result(True)
+
+            monkeypatch.setattr(PendingDeletion, "__post_init__", patched_init)
+
+            ok, _msg = await manager._ensure_disk_space(ev, "cancel.mp4", 100, str(tmp_path / "cancel.mp4"))
+            assert ok is False
+        finally:
+            states.pop("cancel.mp4", None)
+
+    asyncio.run(_run())

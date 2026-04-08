@@ -419,3 +419,104 @@ def test_handle_existing_lists_empty_tracker(monkeypatch):
     monkeypatch.setattr(lc, "message_tracker", tracker)
     handle_existing_lists_for_new_download("new.mp4")
     assert len(tracker.get_messages("new.mp4")) == 0
+
+
+# ── waiting_for_space support ──
+
+
+def test_get_status_text_waiting_for_space():
+    st = DownloadState("f.mp4", "/tmp/f.mp4", 100)
+    st.waiting_for_space = True
+    assert "Waiting for space" in get_status_text(st)
+
+
+def test_build_downloads_list_waiting_for_space():
+    st = DownloadState("space.mp4", "/tmp/space.mp4", 1000)
+    st.waiting_for_space = True
+    text, buttons = build_downloads_list({"space.mp4": st})
+    assert "Waiting for space..." in text
+    # Only Info + Cancel buttons (no Pause/Resume)
+    row = buttons[0]
+    labels = [b.text for b in row]
+    assert any("Info" in label for label in labels)
+    assert any("Cancel" in label for label in labels)
+    assert not any("Pause" in label for label in labels)
+    assert not any("Resume" in label for label in labels)
+
+
+def test_info_waiting_for_space_with_pending_deletion(monkeypatch):
+    """Info on space-waiting download restores the deletion prompt and redirects pending.message."""
+    import downloader.state as state_mod
+
+    sent, _, answered, _tracker = _setup(monkeypatch)
+    st = DownloadState("wait.mp4", "/tmp/wait.mp4", 1000)
+    st.waiting_for_space = True
+    monkeypatch.setattr(lc, "resolve_file_id", lambda fid: "wait.mp4")
+    monkeypatch.setattr(lc, "states", {"wait.mp4": st})
+
+    # Create a pending deletion for this file
+    async def _run():
+        from downloader.state import PendingDeletion
+
+        pd = PendingDeletion(filename="wait.mp4", candidate="old_movie.mkv")
+        original_msg = pd.message
+        state_mod.pending_deletions["testpid"] = pd
+        try:
+            h = _handlers()
+            await h[4](FakeEvent(data=b"info:abc"))
+            # pending.message should now point to the sent message (not original)
+            assert pd.message is not original_msg
+        finally:
+            state_mod.pending_deletions.pop("testpid", None)
+
+    asyncio.run(_run())
+    # Should send a message with deletion prompt text
+    assert any("old_movie.mkv" in s["text"] for s in sent)
+    assert any("Waiting for space" in s["text"] for s in sent)
+    assert any("Space prompt restored" in (a["text"] or "") for a in answered)
+
+
+def test_info_waiting_for_space_no_pending_deletion(monkeypatch):
+    """Info on space-waiting download with no pending deletion shows checking message."""
+    import downloader.state as state_mod
+
+    sent, _, _answered, _ = _setup(monkeypatch)
+    st = DownloadState("wait2.mp4", "/tmp/wait2.mp4", 1000)
+    st.waiting_for_space = True
+    monkeypatch.setattr(lc, "resolve_file_id", lambda fid: "wait2.mp4")
+    monkeypatch.setattr(lc, "states", {"wait2.mp4": st})
+    # Ensure no pending deletions
+    orig = dict(state_mod.pending_deletions)
+    state_mod.pending_deletions.clear()
+    try:
+        h = _handlers()
+        asyncio.run(h[4](FakeEvent(data=b"info:xyz")))
+    finally:
+        state_mod.pending_deletions.update(orig)
+    assert any("Checking disk space" in s["text"] for s in sent)
+
+
+def test_info_waiting_for_space_send_fails(monkeypatch):
+    """Info on space-waiting download gracefully handles send failure."""
+    import downloader.state as state_mod
+
+    sent, _, answered, _ = _setup(monkeypatch)
+
+    async def failing_send(event, text, **kw):
+        sent.append({"text": text, **kw})
+        return None
+
+    monkeypatch.setattr(throttle, "send_message", failing_send)
+
+    st = DownloadState("fail.mp4", "/tmp/fail.mp4", 1000)
+    st.waiting_for_space = True
+    monkeypatch.setattr(lc, "resolve_file_id", lambda fid: "fail.mp4")
+    monkeypatch.setattr(lc, "states", {"fail.mp4": st})
+    orig = dict(state_mod.pending_deletions)
+    state_mod.pending_deletions.clear()
+    try:
+        h = _handlers()
+        asyncio.run(h[4](FakeEvent(data=b"info:abc")))
+    finally:
+        state_mod.pending_deletions.update(orig)
+    assert any("Failed" in (a["text"] or "") for a in answered)

@@ -11,7 +11,7 @@ import utils
 from .buttons import build_buttons
 from .ids import get_file_id
 from .queue import queue
-from .state import MessageType, message_tracker, resolve_file_id, states
+from .state import MessageType, find_pending_deletion, message_tracker, resolve_file_id, states
 
 
 def register_list_handlers(client: TelegramClient):
@@ -140,9 +140,39 @@ async def _handle_info_callback(event):
 
 
 async def _create_info_message(event, filename, state):
-    """Create a new info/progress message for the user."""
+    """Create a new info/progress message for the user.
+
+    When the download is waiting for disk space, restores the interactive
+    deletion prompt so the user can respond even if the original message
+    was lost.
+    """
     sender = await event.get_sender()
     user_id = getattr(sender, "id", None)
+
+    if state.waiting_for_space:
+        result = find_pending_deletion(filename)
+        if result:
+            pid, pending = result
+            text = f"⏳ Waiting for space: {filename}\nDelete oldest candidate: {pending.candidate}?"
+            buttons = [
+                [
+                    Button.inline("✅ Yes", data=f"delok:{pid}"),
+                    Button.inline("❌ No", data=f"delnx:{pid}"),
+                ]
+            ]
+        else:
+            text = f"⏳ Checking disk space for {filename}..."
+            buttons = None
+        msg = await throttle.send_message(event, text, buttons=buttons)
+        if msg:
+            if result:
+                # Redirect deletion handler edits to this message so the user
+                # sees feedback here and _ensure_disk_space continues on it.
+                result[1].message = msg
+            await throttle.answer_callback(event, "Space prompt restored")
+        else:
+            await throttle.answer_callback(event, "Failed to create view", alert=True)
+        return
 
     status = get_status_text(state)
     text = f"{status}: {filename}"
@@ -162,6 +192,8 @@ def get_status_text(state):
         return "🛑 Cancelled"
     if state.completed:
         return "✅ Completed"
+    if state.waiting_for_space:
+        return "⏳ Waiting for space"
     if state.paused:
         return "⏸️ Paused"
     return "⏬ Downloading"
@@ -178,7 +210,9 @@ def build_downloads_list(active_states):
             continue
 
         display_num += 1
-        if state.paused:
+        if state.waiting_for_space:
+            line = f"{display_num}. {filename} (Waiting for space...)"
+        elif state.paused:
             line = f"{display_num}. {filename} (Paused)"
         elif state.progress_percent > 0 and state.downloaded_bytes > 0:
             downloaded_size = utils.humanize_size(state.downloaded_bytes)
@@ -191,7 +225,9 @@ def build_downloads_list(active_states):
 
         file_id = get_file_id(filename)
         row_buttons = [Button.inline("📊 Info", data=f"info:{file_id}")]
-        if state.paused:
+        if state.waiting_for_space:
+            row_buttons.append(Button.inline("🛑 Cancel", data=f"lcancel:{file_id}"))
+        elif state.paused:
             row_buttons.append(Button.inline("▶️ Resume", data=f"resume:{file_id}"))
         else:
             row_buttons.append(Button.inline("⏸️ Pause", data=f"pause:{file_id}"))

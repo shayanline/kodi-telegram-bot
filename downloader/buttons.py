@@ -12,6 +12,9 @@ def build_buttons(state: DownloadState):
 
     file_id = get_file_id(state.filename)
 
+    if state.waiting_for_space:
+        return [[Button.inline("🛑 Cancel", data=f"cancel:{file_id}")]]
+
     if state.paused:
         return [
             [

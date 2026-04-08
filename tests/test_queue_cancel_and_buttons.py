@@ -251,3 +251,23 @@ def test_cancel_confirm_from_progress_uses_original_prefixes():
 def test_run():  # entry point to ensure file executes, minimal smoke
     test_queue_cancel_removes_item()
     test_progress_keeps_buttons()
+
+
+# ── waiting_for_space buttons ──
+
+
+def test_build_buttons_waiting_for_space():
+    """When waiting_for_space, only a Cancel button is returned."""
+    from downloader.buttons import build_buttons
+
+    st = DownloadState("space.mp4", "/tmp/space.mp4", 1000)
+    st.waiting_for_space = True
+    register_file_id(st.filename)
+    try:
+        buttons = build_buttons(st)
+        assert buttons is not None
+        flat = [b for row in buttons for b in row]
+        assert len(flat) == 1
+        assert b"cancel:" in flat[0].data
+    finally:
+        file_id_map.pop(get_file_id(st.filename), None)
