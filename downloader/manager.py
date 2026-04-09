@@ -38,6 +38,7 @@ from .state import (
     PendingDeletion,
     file_id_map,
     find_pending_deletion,
+    frozen_list_msg_ids,
     message_tracker,
     pending_deletions,
     register_file_id,
@@ -63,8 +64,7 @@ _download_lock = asyncio.Lock()
 # Prevent GC of fire-and-forget download tasks (see RUF006)
 _bg_tasks: set[asyncio.Task[None]] = set()
 
-# Rate-limit download-list edits inside _patched_edit (runs under _tg_lock)
-_list_update_ts: dict[str, float] = {"last": 0.0}
+# Periodic download-list update interval (seconds)
 _LIST_UPDATE_INTERVAL = 5.0
 
 
@@ -94,6 +94,44 @@ def _spawn(coro: Any) -> None:
     task.add_done_callback(_bg_tasks.discard)
 
 
+async def _fan_out_mirrors(state: DownloadState, text: str, kwargs: dict):
+    """Best-effort update of mirror progress messages (runs as background task)."""
+    for tracked in message_tracker.get_messages(state.filename, MessageType.PROGRESS):
+        if state.message and tracked.message.id == state.message.id:
+            continue
+        try:
+            await tracked.message.edit(text, **kwargs)
+        except Exception as exc:
+            if type(exc).__name__ != "MessageNotModifiedError":
+                with contextlib.suppress(Exception):
+                    new_mirror = await tracked.message.respond(text, **kwargs)
+                    if new_mirror:
+                        tracked.message = new_mirror
+
+
+async def _periodic_list_updater():
+    """Periodically update all tracked download list messages.
+
+    Consolidates per-download progress ticks into a single timer so the list
+    is rebuilt at most once per interval regardless of how many downloads are
+    active.  Skips messages currently showing cancel confirmation prompts.
+    """
+    while True:
+        await asyncio.sleep(_LIST_UPDATE_INTERVAL)
+        if not any(not s.cancelled and not s.completed for s in states.values()):
+            continue
+        try:
+            text, buttons = build_downloads_list(states)
+            for tracked in message_tracker.get_messages("__downloads_list__", MessageType.DOWNLOAD_LIST):
+                if tracked.message.id in frozen_list_msg_ids:
+                    continue
+                new_msg = await throttle.edit_message(tracked.message, text, buttons=buttons)
+                if new_msg and new_msg is not tracked.message:
+                    tracked.message = new_msg
+        except Exception:
+            pass
+
+
 async def _safe_edit(msg, text: str, buttons=None, state: DownloadState | None = None):
     """Edit a message, falling back to a new response if editing fails."""
     result = await throttle.edit_message(msg, text, buttons=buttons)
@@ -121,7 +159,7 @@ async def _update_tracked_messages(filename: str, state: DownloadState):
                 if new_msg and new_msg is not tracked.message:
                     tracked.message = new_msg
             elif tracked.message_type == MessageType.DOWNLOAD_LIST:
-                if any(s.confirming_cancel for s in states.values()):
+                if tracked.message.id in frozen_list_msg_ids:
                     continue
                 text, buttons = build_downloads_list(states)
                 new_msg = await _safe_edit(tracked.message, text, buttons=buttons)
@@ -413,11 +451,12 @@ async def run_download(
             except Exception:
                 pass
 
-    # Monkey-patch msg.edit to fan out updates to mirror messages with fallback.
+    # Monkey-patch msg.edit to fan out updates to mirror messages.
     #
     # IMPORTANT: _patched_edit runs inside _tg_call (which holds _tg_lock).
-    # All API calls here MUST bypass throttle.* to avoid deadlocking on the
-    # non-reentrant _tg_lock.
+    # Mirror updates are scheduled as background tasks so _tg_lock is released
+    # promptly after the primary edit.  Download-list updates are handled by
+    # the periodic _list_updater task instead of inline here.
     _orig_edit = msg.edit
 
     async def _patched_edit(text: str, **kwargs):  # pragma: no cover simple wrapper
@@ -436,31 +475,9 @@ async def run_download(
                     state.message = new_msg
                     _orig_edit = new_msg.edit
                     r = new_msg
-        for tracked in message_tracker.get_messages(state.filename, MessageType.PROGRESS):
-            if state.message and tracked.message.id == state.message.id:
-                continue
-            try:
-                await tracked.message.edit(text, **kwargs)
-            except Exception as exc:
-                if type(exc).__name__ != "MessageNotModifiedError":
-                    try:
-                        new_mirror = await tracked.message.respond(text, **kwargs)
-                        if new_mirror:
-                            tracked.message = new_mirror
-                    except Exception:
-                        pass
-        # Rate-limited download-list update (direct API — _tg_lock is held)
-        # Skip when any download shows a cancel confirmation to avoid
-        # overwriting the interactive prompt on a list message.
-        now = time.time()
-        if now - _list_update_ts["last"] >= _LIST_UPDATE_INTERVAL and not any(
-            s.confirming_cancel for s in states.values()
-        ):
-            _list_update_ts["last"] = now
-            list_text, list_buttons = build_downloads_list(states)
-            for tracked in message_tracker.get_messages("__downloads_list__", MessageType.DOWNLOAD_LIST):
-                with contextlib.suppress(Exception):
-                    await tracked.message.edit(list_text, buttons=list_buttons)
+        # Fan out to mirror progress messages in the background so _tg_lock
+        # is released without waiting for each mirror's network roundtrip.
+        _spawn(_fan_out_mirrors(state, text, dict(kwargs)))
         return r
 
     with contextlib.suppress(Exception):
@@ -621,6 +638,7 @@ def register_handlers(client: TelegramClient):
     if not _queue_started:
         queue.set_runner(_queued_runner)
         queue.ensure_worker(client.loop, client)
+        _spawn(_periodic_list_updater())
         _queue_started = True
     log.debug("Queue worker started")
 
@@ -930,6 +948,8 @@ def _register_pause_resume_cancel(client: TelegramClient):
     async def _do_cancel(st, event, *, from_list: bool = False):
         file_id = get_file_id(st.filename)
         st.confirming_cancel = True
+        if from_list:
+            frozen_list_msg_ids.add(event._message_id)
         text = f"⚠️ **Cancel this download?**\n\n{st.filename}"
         yes_data = f"cyl:{file_id}" if from_list else f"cy:{file_id}"
         no_data = f"cnl:{file_id}" if from_list else f"cn:{file_id}"
@@ -966,6 +986,7 @@ def _register_cancel_confirm(client: TelegramClient):
     @client.on(events.CallbackQuery(pattern=b"c(y|n)l?:"))
     @throttle.serialized
     async def _cancel_confirm(event):
+        frozen_list_msg_ids.discard(event._message_id)
         data = event.data.decode()
         colon_idx = data.index(":")
         prefix = data[:colon_idx]
@@ -1019,6 +1040,8 @@ def _register_qcancel(client: TelegramClient):
             return
         qi = queue.items.get(filename)
         if qi and not qi.cancelled:
+            if from_list:
+                frozen_list_msg_ids.add(event._message_id)
             text = f"⚠️ **Cancel this queued download?**\n\n{filename}"
             yes_data = f"qcyl:{file_id}" if from_list else f"qcy:{file_id}"
             no_data = f"qcnl:{file_id}" if from_list else f"qcn:{file_id}"
@@ -1035,6 +1058,8 @@ def _register_qcancel(client: TelegramClient):
         st = states.get(filename)
         if st and not st.cancelled:
             st.confirming_cancel = True
+            if from_list:
+                frozen_list_msg_ids.add(event._message_id)
             text = f"⚠️ **Cancel this download?**\n\n{filename}"
             yes_data = f"cyl:{file_id}" if from_list else f"cy:{file_id}"
             no_data = f"cnl:{file_id}" if from_list else f"cn:{file_id}"
@@ -1054,6 +1079,7 @@ def _register_qcancel_confirm(client: TelegramClient):
     @client.on(events.CallbackQuery(pattern=b"qc(y|n)l?:"))
     @throttle.serialized
     async def _qcancel_confirm(event):
+        frozen_list_msg_ids.discard(event._message_id)
         data = event.data.decode()
         colon_idx = data.index(":")
         prefix = data[:colon_idx]

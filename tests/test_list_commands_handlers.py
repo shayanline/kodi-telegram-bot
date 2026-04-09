@@ -587,29 +587,39 @@ def test_update_all_download_lists_no_tracked_messages(monkeypatch):
     asyncio.run(update_all_download_lists())
 
 
-def test_update_all_download_lists_skips_when_confirming_cancel(monkeypatch):
-    """List messages are not updated while a cancel confirmation is active."""
+def test_update_all_download_lists_skips_frozen_message(monkeypatch):
+    """Frozen list messages (showing cancel confirmation) are skipped during update."""
     from downloader.list_commands import update_all_download_lists
+    from downloader.state import frozen_list_msg_ids
 
     edited_calls = []
     tracker = MessageTracker()
     monkeypatch.setattr(lc, "message_tracker", tracker)
 
-    msg = FakeMsg(50)
-    tracker.register_message("__downloads_list__", msg, MessageType.DOWNLOAD_LIST, 1)
+    frozen_msg = FakeMsg(50)
+    ok_msg = FakeMsg(51)
+    tracker.register_message("__downloads_list__", frozen_msg, MessageType.DOWNLOAD_LIST, 1)
+    tracker.register_message("__downloads_list__", ok_msg, MessageType.DOWNLOAD_LIST, 2)
 
     st = DownloadState("dl.mp4", "/tmp/dl.mp4", 1000)
-    st.confirming_cancel = True
+    st.update_progress(500, 50, "1 MB/s")
     monkeypatch.setattr(lc, "states", {"dl.mp4": st})
 
+    frozen_list_msg_ids.add(50)
+
     async def fake_edit(target, text, **kw):
-        edited_calls.append({"text": text})
+        edited_calls.append({"target_id": target.id, "text": text})
         return target
 
     monkeypatch.setattr(throttle, "edit_message", fake_edit)
 
-    asyncio.run(update_all_download_lists())
-    assert len(edited_calls) == 0
+    try:
+        asyncio.run(update_all_download_lists())
+        # Only the non-frozen message should be edited
+        assert len(edited_calls) == 1
+        assert edited_calls[0]["target_id"] == 51
+    finally:
+        frozen_list_msg_ids.discard(50)
 
 
 # ── Duplicate Cancel button fix ──

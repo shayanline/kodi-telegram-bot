@@ -144,6 +144,10 @@ message_tracker = MessageTracker()
 states: dict[str, DownloadState] = {}
 file_id_map: dict[str, str] = {}
 
+# Message IDs of list messages currently showing cancel confirmation prompts.
+# Prevents periodic list updates from overwriting the interactive prompt.
+frozen_list_msg_ids: set[int] = set()
+
 
 def register_file_id(filename: str) -> str:
     """Register filename and return its short ID."""
@@ -192,6 +196,7 @@ __all__ = [
     "TrackedMessage",
     "file_id_map",
     "find_pending_deletion",
+    "frozen_list_msg_ids",
     "message_tracker",
     "pending_deletions",
     "register_file_id",

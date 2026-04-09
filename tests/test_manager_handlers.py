@@ -11,6 +11,7 @@ import kodi
 import utils
 from downloader.manager import (
     _current_reserved_bytes,
+    _fan_out_mirrors,
     _final_cleanup,
     _handle_error,
     _handle_success,
@@ -536,15 +537,15 @@ def test_update_tracked_messages_download_list(monkeypatch):
     message_tracker.cleanup_file("track2.mp4")
 
 
-def test_update_tracked_messages_skips_list_when_confirming_cancel(monkeypatch):
-    """Download list messages are not updated while a cancel confirmation is active."""
+def test_update_tracked_messages_skips_frozen_list_message(monkeypatch):
+    """Download list messages whose ID is in frozen_list_msg_ids are skipped."""
+    from downloader.state import frozen_list_msg_ids
+
     list_msg = FakeMsg(msg_id=11)
     st = DownloadState("skip.mp4", "/tmp/skip.mp4", 100)
-    other = DownloadState("other.mp4", "/tmp/other.mp4", 100)
-    other.confirming_cancel = True
-    states["other.mp4"] = other
 
     message_tracker.register_message("skip.mp4", list_msg, MessageType.DOWNLOAD_LIST, 1)
+    frozen_list_msg_ids.add(11)
 
     async def _run():
         await _update_tracked_messages("skip.mp4", st)
@@ -554,7 +555,82 @@ def test_update_tracked_messages_skips_list_when_confirming_cancel(monkeypatch):
         assert list_msg.edited is None
     finally:
         message_tracker.cleanup_file("skip.mp4")
-        states.pop("other.mp4", None)
+        frozen_list_msg_ids.discard(11)
+
+
+def test_update_tracked_messages_updates_non_frozen_list_message(monkeypatch):
+    """Non-frozen download list messages are still updated."""
+    from downloader.state import frozen_list_msg_ids
+
+    list_msg = FakeMsg(msg_id=12)
+    st = DownloadState("ok.mp4", "/tmp/ok.mp4", 100)
+
+    message_tracker.register_message("ok.mp4", list_msg, MessageType.DOWNLOAD_LIST, 1)
+    # Freeze a different message
+    frozen_list_msg_ids.add(99)
+
+    async def _run():
+        await _update_tracked_messages("ok.mp4", st)
+
+    try:
+        asyncio.run(_run())
+        assert list_msg.edited is not None
+    finally:
+        message_tracker.cleanup_file("ok.mp4")
+        frozen_list_msg_ids.discard(99)
+
+
+# ── _fan_out_mirrors ──
+
+
+def test_fan_out_mirrors_edits_non_primary_mirrors():
+    """_fan_out_mirrors edits mirror messages but skips the primary."""
+    primary = FakeMsg(msg_id=1)
+    mirror = FakeMsg(msg_id=2)
+    st = DownloadState("fan.mp4", "/tmp/fan.mp4", 100)
+    st.message = primary
+
+    message_tracker.register_message("fan.mp4", primary, MessageType.PROGRESS, 1)
+    message_tracker.register_message("fan.mp4", mirror, MessageType.PROGRESS, 2)
+
+    async def _run():
+        await _fan_out_mirrors(st, "progress text", {})
+
+    asyncio.run(_run())
+    assert primary.edited is None
+    assert mirror.edited == "progress text"
+    message_tracker.cleanup_file("fan.mp4")
+
+
+def test_fan_out_mirrors_fallback_on_failure():
+    """_fan_out_mirrors replaces a broken mirror via respond."""
+    primary = FakeMsg(msg_id=1)
+
+    class FailMirror:
+        id = 2
+        responded = None
+
+        async def edit(self, text, **kw):
+            raise RuntimeError("gone")
+
+        async def respond(self, text, **kw):
+            self.responded = text
+            return FakeMsg(msg_id=200)
+
+    mirror = FailMirror()
+    st = DownloadState("fall.mp4", "/tmp/fall.mp4", 100)
+    st.message = primary
+
+    message_tracker.register_message("fall.mp4", mirror, MessageType.PROGRESS, 2)
+    tracked = message_tracker.get_messages("fall.mp4", MessageType.PROGRESS)[0]
+
+    async def _run():
+        await _fan_out_mirrors(st, "update", {})
+
+    asyncio.run(_run())
+    assert mirror.responded == "update"
+    assert tracked.message.id == 200
+    message_tracker.cleanup_file("fall.mp4")
 
 
 # ── _ensure_disk_space (TEST_AUTO_ACCEPT path) ──
@@ -677,6 +753,7 @@ def test_register_handlers_does_not_crash(monkeypatch):
     from downloader import manager
 
     monkeypatch.setattr(manager, "_queue_started", False)
+    monkeypatch.setattr(manager, "_spawn", lambda coro: coro.close())
 
     client = FakeClient()
     manager.register_handlers(client)
@@ -760,8 +837,9 @@ def test_start_handler_unauthorized(monkeypatch):
 class FakeCallbackEvent:
     """Minimal callback query event for testing deletion callbacks."""
 
-    def __init__(self, data: bytes):
+    def __init__(self, data: bytes, msg_id: int = 1):
         self.data = data
+        self._message_id = msg_id
         self._answered = None
         self._edited_text = None
         self._edited_buttons = None
@@ -1005,6 +1083,70 @@ def test_qcancel_decline_shows_active_state():
     finally:
         states.pop(filename, None)
         file_id_map.pop(file_id, None)
+        client.loop.close()
+
+
+# ── frozen_list_msg_ids for cancel from list ──
+
+
+def test_lcancel_freezes_message_id():
+    """lcancel from download list adds the message ID to frozen_list_msg_ids."""
+    from downloader import manager
+    from downloader.state import frozen_list_msg_ids, register_file_id
+
+    filename = "freeze.mp4"
+    file_id = register_file_id(filename)
+    st = DownloadState(filename, "/tmp/freeze.mp4", 1000)
+    states[filename] = st
+
+    client = FakeClient()
+    manager._register_pause_resume_cancel(client)
+    handler = client.handlers[0]
+
+    async def _run():
+        ev = FakeCallbackEvent(f"lcancel:{file_id}".encode(), msg_id=42)
+        await handler(ev)
+        return ev
+
+    try:
+        asyncio.run(_run())
+        assert 42 in frozen_list_msg_ids
+    finally:
+        states.pop(filename, None)
+        file_id_map.pop(file_id, None)
+        frozen_list_msg_ids.discard(42)
+        st.confirming_cancel = False
+        client.loop.close()
+
+
+def test_cancel_confirm_unfreezes_message_id():
+    """Cancel confirm (from list) removes the message ID from frozen_list_msg_ids."""
+    from downloader import manager
+    from downloader.state import frozen_list_msg_ids, register_file_id
+
+    filename = "unfreeze.mp4"
+    file_id = register_file_id(filename)
+    st = DownloadState(filename, "/tmp/unfreeze.mp4", 1000)
+    st.confirming_cancel = True
+    states[filename] = st
+    frozen_list_msg_ids.add(42)
+
+    client = FakeClient()
+    manager._register_cancel_confirm(client)
+    handler = client.handlers[0]
+
+    async def _run():
+        ev = FakeCallbackEvent(f"cnl:{file_id}".encode(), msg_id=42)
+        await handler(ev)
+        return ev
+
+    try:
+        asyncio.run(_run())
+        assert 42 not in frozen_list_msg_ids
+    finally:
+        states.pop(filename, None)
+        file_id_map.pop(file_id, None)
+        frozen_list_msg_ids.discard(42)
         client.loop.close()
 
 

@@ -11,7 +11,7 @@ import utils
 from .buttons import build_buttons
 from .ids import get_file_id
 from .queue import queue
-from .state import MessageType, find_pending_deletion, message_tracker, resolve_file_id, states
+from .state import MessageType, find_pending_deletion, frozen_list_msg_ids, message_tracker, resolve_file_id, states
 
 
 def register_list_handlers(client: TelegramClient):
@@ -261,9 +261,9 @@ def handle_existing_lists_for_new_download(filename: str):
 
 async def update_all_download_lists():
     """Edit every tracked /downloads list message with the current state."""
-    if any(s.confirming_cancel for s in states.values()):
-        return
     for tracked in message_tracker.get_messages("__downloads_list__", MessageType.DOWNLOAD_LIST):
+        if tracked.message.id in frozen_list_msg_ids:
+            continue
         try:
             if states:
                 text, buttons = build_downloads_list(states)
