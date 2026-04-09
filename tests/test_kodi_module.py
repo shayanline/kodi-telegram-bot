@@ -206,18 +206,6 @@ def test_input_command_valid(monkeypatch):
     assert "Input.Select" in seen
 
 
-def test_input_command_invalid(monkeypatch):
-    seen = []
-
-    async def fake_rpc(method, params=None):
-        seen.append(method)
-        return {"result": "OK"}
-
-    monkeypatch.setattr(kodi, "_rpc", fake_rpc)
-    asyncio.run(kodi.input_command("InvalidCommand"))
-    assert len(seen) == 0
-
-
 # ── _rpc_sync non-200 ──
 
 

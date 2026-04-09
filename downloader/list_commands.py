@@ -19,7 +19,6 @@ def register_list_handlers(client: TelegramClient):
     _register_downloads_handler(client)
     _register_queue_handler(client)
     _register_list_callbacks(client)
-    _register_noop_handler(client)
 
 
 def _register_downloads_handler(client: TelegramClient):
@@ -46,10 +45,10 @@ def _register_downloads_handler(client: TelegramClient):
             text, buttons = build_downloads_list(states)
             msg = await throttle.send_message(event, text, buttons=buttons)
 
-        message_tracker.register_message("__downloads_list__", msg, MessageType.DOWNLOAD_LIST, user_id)
+        message_tracker.register_message("__downloads_list__", msg, MessageType.DOWNLOAD_LIST)
         message_tracker.trim_list_messages("__downloads_list__")
         for filename in states:
-            message_tracker.register_message(filename, msg, MessageType.DOWNLOAD_LIST, user_id)
+            message_tracker.register_message(filename, msg, MessageType.DOWNLOAD_LIST)
 
 
 def _register_queue_handler(client: TelegramClient):
@@ -76,10 +75,10 @@ def _register_queue_handler(client: TelegramClient):
             text, buttons = build_queue_list(queue.items)
             msg = await throttle.send_message(event, text, buttons=buttons)
 
-        message_tracker.register_message("__queue_list__", msg, MessageType.QUEUE_LIST, user_id)
+        message_tracker.register_message("__queue_list__", msg, MessageType.QUEUE_LIST)
         message_tracker.trim_list_messages("__queue_list__")
         for filename in queue.items:
-            message_tracker.register_message(filename, msg, MessageType.QUEUE_LIST, user_id)
+            message_tracker.register_message(filename, msg, MessageType.QUEUE_LIST)
 
 
 def _register_list_callbacks(client: TelegramClient):
@@ -138,9 +137,6 @@ async def _create_info_message(event, filename, state):
     deletion prompt so the user can respond even if the original message
     was lost.
     """
-    sender = await event.get_sender()
-    user_id = getattr(sender, "id", None)
-
     if state.waiting_for_space:
         result = find_pending_deletion(filename)
         if result:
@@ -172,7 +168,7 @@ async def _create_info_message(event, filename, state):
 
     msg = await throttle.send_message(event, text, buttons=buttons)
     if msg:
-        message_tracker.register_message(filename, msg, MessageType.PROGRESS, user_id)
+        message_tracker.register_message(filename, msg, MessageType.PROGRESS)
         await throttle.answer_callback(event, "Created progress view")
     else:
         await throttle.answer_callback(event, "Failed to create progress view", alert=True)
@@ -241,10 +237,7 @@ def build_queue_list(queue_items):
 
     for i, (filename, qi) in enumerate(queue_items.items(), 1):
         lines.append(f"**{i}.** 🕒 {filename}")
-        if qi.file_id:
-            buttons.append([Button.inline("🛑 Cancel", data=f"lqcancel:{qi.file_id}")])
-        else:
-            buttons.append([Button.inline("❌ No Action", data="no_action")])
+        buttons.append([Button.inline("🛑 Cancel", data=f"lqcancel:{qi.file_id}")])
 
     buttons.append([Button.inline("🔄 Refresh", data="refresh_queue")])
     return "\n".join(lines), buttons
@@ -254,9 +247,7 @@ def handle_existing_lists_for_new_download(filename: str):
     """Register a new download with existing list messages."""
     for tracked_msg in message_tracker.get_all_list_messages():
         with contextlib.suppress(Exception):
-            message_tracker.register_message(
-                filename, tracked_msg.message, tracked_msg.message_type, tracked_msg.user_id
-            )
+            message_tracker.register_message(filename, tracked_msg.message, tracked_msg.message_type)
 
 
 async def update_all_download_lists():
@@ -275,13 +266,6 @@ async def update_all_download_lists():
                 tracked.message = new_msg
         except Exception:
             pass
-
-
-def _register_noop_handler(client: TelegramClient):
-    @client.on(events.CallbackQuery(pattern=b"no_action"))
-    @throttle.serialized
-    async def _noop(event):
-        await throttle.answer_callback(event)
 
 
 __all__ = [

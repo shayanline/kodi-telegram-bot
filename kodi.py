@@ -191,22 +191,13 @@ async def toggle_mute() -> None:
 
 # ── Navigation / input ──
 
-_VALID_INPUT_COMMANDS = frozenset(
-    {"Up", "Down", "Left", "Right", "Select", "Back", "Home", "Info", "ContextMenu", "ShowOSD"}
-)
-
 
 async def input_command(name: str) -> None:
     """Send an Input.{name} command (Up, Down, Left, Right, Select, etc.)."""
-    if name not in _VALID_INPUT_COMMANDS:
-        log.warning("Invalid input command: %s", name)
-        return
     await _rpc(f"Input.{name}")
 
 
 __all__ = [
-    "_RpcQueue",
-    "_rpc_queue",
     "get_active_player_id",
     "get_now_playing",
     "get_player_info",

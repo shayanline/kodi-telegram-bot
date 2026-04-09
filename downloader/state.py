@@ -26,8 +26,6 @@ class MessageType(Enum):
     DOWNLOAD_LIST = "download_list"
     QUEUE_LIST = "queue_list"
     QUEUED = "queued"
-    ALREADY_DOWNLOADING = "already_downloading"
-    ALREADY_QUEUED = "already_queued"
 
 
 @dataclass(slots=True)
@@ -36,7 +34,6 @@ class TrackedMessage:
 
     message: Message
     message_type: MessageType
-    user_id: int | None = None
 
 
 class CancelledDownload(Exception):  # pragma: no cover - simple marker
@@ -61,7 +58,6 @@ class DownloadState:
     completed: bool = False
     confirming_cancel: bool = False
     waiting_for_space: bool = False
-    last_text: str = ""
     downloaded_bytes: int = 0
     progress_percent: int = 0
     speed: str = "0 B/s"
@@ -107,8 +103,8 @@ class MessageTracker:
     def __init__(self):
         self._messages: dict[str, list[TrackedMessage]] = {}
 
-    def register_message(self, filename: str, message, message_type: MessageType, user_id: int | None = None):
-        tracked = TrackedMessage(message, message_type, user_id)
+    def register_message(self, filename: str, message, message_type: MessageType):
+        tracked = TrackedMessage(message, message_type)
         if filename not in self._messages:
             self._messages[filename] = []
         self._messages[filename].append(tracked)

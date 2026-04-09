@@ -445,9 +445,7 @@ async def run_download(
                     buttons=build_buttons(state),
                 )
                 if mirror_msg:
-                    sender = await wev.get_sender()
-                    user_id = getattr(sender, "id", None)
-                    message_tracker.register_message(filename, mirror_msg, MessageType.PROGRESS, user_id)
+                    message_tracker.register_message(filename, mirror_msg, MessageType.PROGRESS)
             except Exception:
                 pass
 
@@ -519,11 +517,8 @@ async def _send_start_message(event: events.NewMessage.Event, state: DownloadSta
         reply_to=getattr(event, "id", None),
     )
     state.message = msg
-    state.last_text = start_text
 
-    sender = await event.get_sender()
-    user_id = getattr(sender, "id", None)
-    message_tracker.register_message(state.filename, msg, MessageType.PROGRESS, user_id)
+    message_tracker.register_message(state.filename, msg, MessageType.PROGRESS)
 
     await kodi.notify("Download Started", state.filename)
     log.info("Start download %s (%s)", state.filename, utils.humanize_size(state.size))
@@ -671,9 +666,6 @@ async def _handle_active_duplicate(event, active_state: DownloadState, filename:
             )
             msg = await throttle.send_message(event, f"{base}: {filename}", reply_to=reply_target)
             if msg:
-                sender = await event.get_sender()
-                user_id = getattr(sender, "id", None)
-                message_tracker.register_message(filename, msg, MessageType.ALREADY_DOWNLOADING, user_id)
                 return
         except Exception:
             pass  # fall through to creating mirror message
@@ -686,9 +678,7 @@ async def _handle_active_duplicate(event, active_state: DownloadState, filename:
             reply_to=getattr(event, "id", None),
         )
         if mirror_msg:
-            sender = await event.get_sender()
-            user_id = getattr(sender, "id", None)
-            message_tracker.register_message(filename, mirror_msg, MessageType.PROGRESS, user_id)
+            message_tracker.register_message(filename, mirror_msg, MessageType.PROGRESS)
     except Exception:
         pass
 
@@ -706,9 +696,6 @@ async def _handle_queued_duplicate(event, queued_item: QueuedItem, filename: str
                 reply_to=reply_target,
             )
             if msg:
-                sender = await event.get_sender()
-                user_id = getattr(sender, "id", None)
-                message_tracker.register_message(filename, msg, MessageType.ALREADY_QUEUED, user_id)
                 if not same:
                     queued_item.add_watcher(event)
                 return
@@ -728,9 +715,7 @@ async def _handle_queued_duplicate(event, queued_item: QueuedItem, filename: str
         if msg:
             if not queued_item.message:
                 queued_item.message = msg
-            sender = await event.get_sender()
-            user_id = getattr(sender, "id", None)
-            message_tracker.register_message(filename, msg, MessageType.QUEUED, user_id)
+            message_tracker.register_message(filename, msg, MessageType.QUEUED)
             if not same:
                 queued_item.add_watcher(event)
     except Exception:
@@ -751,9 +736,7 @@ async def _do_enqueue(client: TelegramClient, document, filename, size, path, ev
         )
         if msg:
             qi.message = msg
-            sender = await event.get_sender()
-            user_id = getattr(sender, "id", None)
-            message_tracker.register_message(filename, msg, MessageType.QUEUED, user_id)
+            message_tracker.register_message(filename, msg, MessageType.QUEUED)
     except Exception:
         pass
 

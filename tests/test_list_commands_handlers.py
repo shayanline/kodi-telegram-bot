@@ -9,7 +9,6 @@ import downloader.list_commands as lc
 import throttle
 from downloader.list_commands import (
     build_downloads_list,
-    build_queue_list,
     get_status_text,
     handle_existing_lists_for_new_download,
     register_list_handlers,
@@ -105,7 +104,7 @@ def _handlers():
     """Register list handlers on a FakeClient and return the handler list.
 
     Order: [0] downloads, [1] queue, [2] refresh_downloads,
-           [3] refresh_queue, [4] info, [5] noop
+           [3] refresh_queue, [4] info
     """
     client = FakeClient()
     register_list_handlers(client)
@@ -118,7 +117,7 @@ def _handlers():
 def test_register_list_handlers_registers_six_handlers():
     client = FakeClient()
     register_list_handlers(client)
-    assert len(client.handlers) == 6
+    assert len(client.handlers) == 5
 
 
 # ── _downloads handler (lines 26-56) ──
@@ -283,17 +282,6 @@ def test_info_send_message_fails(monkeypatch):
     assert len(tracker.get_messages("fail.mp4", MessageType.PROGRESS)) == 0
 
 
-# ── _noop handler (lines 233-237) ──
-
-
-def test_noop_handler(monkeypatch):
-    _, _, answered, _ = _setup(monkeypatch)
-    h = _handlers()
-    asyncio.run(h[5](FakeEvent()))
-    assert len(answered) == 1
-    assert answered[0]["text"] is None
-
-
 # ── get_status_text (lines 159-167) ──
 
 
@@ -348,19 +336,6 @@ def test_build_downloads_list_all_cancelled_and_completed():
     assert "No active downloads" in text
 
 
-# ── build_queue_list (lines 208-221) ──
-
-
-def test_build_queue_list_no_file_id():
-    """QueuedItem without file_id gets a 'No Action' button."""
-    qi = QueuedItem("noid.mp4", object(), 10, "/tmp/noid.mp4", FakeEvent())
-    qi.file_id = None
-    text, buttons = build_queue_list({"noid.mp4": qi})
-    assert "noid.mp4" in text
-    no_action = any(hasattr(b, "data") and b.data and b"no_action" in b.data for row in buttons for b in row)
-    assert no_action
-
-
 # ── handle_existing_lists_for_new_download (lines 224-230) ──
 
 
@@ -368,7 +343,7 @@ def test_handle_existing_lists_registers_with_tracked_messages(monkeypatch):
     tracker = MessageTracker()
     monkeypatch.setattr(lc, "message_tracker", tracker)
     msg = FakeMsg()
-    tracker.register_message("__downloads_list__", msg, MessageType.DOWNLOAD_LIST, 1)
+    tracker.register_message("__downloads_list__", msg, MessageType.DOWNLOAD_LIST)
 
     handle_existing_lists_for_new_download("new.mp4")
 
@@ -380,8 +355,8 @@ def test_handle_existing_lists_registers_with_tracked_messages(monkeypatch):
 def test_handle_existing_lists_with_multiple_list_types(monkeypatch):
     tracker = MessageTracker()
     monkeypatch.setattr(lc, "message_tracker", tracker)
-    tracker.register_message("__downloads_list__", FakeMsg(1), MessageType.DOWNLOAD_LIST, 1)
-    tracker.register_message("__queue_list__", FakeMsg(2), MessageType.QUEUE_LIST, 2)
+    tracker.register_message("__downloads_list__", FakeMsg(1), MessageType.DOWNLOAD_LIST)
+    tracker.register_message("__queue_list__", FakeMsg(2), MessageType.QUEUE_LIST)
 
     handle_existing_lists_for_new_download("multi.mp4")
 
@@ -513,8 +488,8 @@ def test_update_all_download_lists_edits_sentinel_messages(monkeypatch):
 
     msg1 = FakeMsg(10)
     msg2 = FakeMsg(20)
-    tracker.register_message("__downloads_list__", msg1, MessageType.DOWNLOAD_LIST, 1)
-    tracker.register_message("__downloads_list__", msg2, MessageType.DOWNLOAD_LIST, 2)
+    tracker.register_message("__downloads_list__", msg1, MessageType.DOWNLOAD_LIST)
+    tracker.register_message("__downloads_list__", msg2, MessageType.DOWNLOAD_LIST)
 
     st = DownloadState("dl.mp4", "/tmp/dl.mp4", 1000)
     st.update_progress(500, 50, "1 MB/s")
@@ -542,7 +517,7 @@ def test_update_all_download_lists_empty_states(monkeypatch):
     monkeypatch.setattr(lc, "states", {})
 
     msg = FakeMsg(30)
-    tracker.register_message("__downloads_list__", msg, MessageType.DOWNLOAD_LIST, 1)
+    tracker.register_message("__downloads_list__", msg, MessageType.DOWNLOAD_LIST)
 
     async def fake_edit(target, text, **kw):
         edited_calls.append({"text": text})
@@ -564,7 +539,7 @@ def test_update_all_download_lists_tolerates_edit_failure(monkeypatch):
     monkeypatch.setattr(lc, "states", {})
 
     msg = FakeMsg(40)
-    tracker.register_message("__downloads_list__", msg, MessageType.DOWNLOAD_LIST, 1)
+    tracker.register_message("__downloads_list__", msg, MessageType.DOWNLOAD_LIST)
 
     async def failing_edit(target, text, **kw):
         raise RuntimeError("edit boom")
@@ -598,8 +573,8 @@ def test_update_all_download_lists_skips_frozen_message(monkeypatch):
 
     frozen_msg = FakeMsg(50)
     ok_msg = FakeMsg(51)
-    tracker.register_message("__downloads_list__", frozen_msg, MessageType.DOWNLOAD_LIST, 1)
-    tracker.register_message("__downloads_list__", ok_msg, MessageType.DOWNLOAD_LIST, 2)
+    tracker.register_message("__downloads_list__", frozen_msg, MessageType.DOWNLOAD_LIST)
+    tracker.register_message("__downloads_list__", ok_msg, MessageType.DOWNLOAD_LIST)
 
     st = DownloadState("dl.mp4", "/tmp/dl.mp4", 1000)
     st.update_progress(500, 50, "1 MB/s")

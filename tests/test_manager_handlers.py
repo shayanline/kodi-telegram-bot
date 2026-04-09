@@ -355,7 +355,6 @@ def test_send_start_message(monkeypatch):
 
     asyncio.run(_run())
     assert st.message is not None
-    assert st.last_text is not None
     message_tracker.cleanup_file("test.mp4")
 
 
@@ -513,7 +512,7 @@ def test_update_tracked_messages_progress(monkeypatch):
     st = DownloadState("track.mp4", "/tmp/track.mp4", 100)
     st.message = primary
 
-    message_tracker.register_message("track.mp4", mirror, MessageType.PROGRESS, 1)
+    message_tracker.register_message("track.mp4", mirror, MessageType.PROGRESS)
 
     async def _run():
         await _update_tracked_messages("track.mp4", st)
@@ -527,7 +526,7 @@ def test_update_tracked_messages_download_list(monkeypatch):
     list_msg = FakeMsg(msg_id=10)
     st = DownloadState("track2.mp4", "/tmp/track2.mp4", 100)
 
-    message_tracker.register_message("track2.mp4", list_msg, MessageType.DOWNLOAD_LIST, 1)
+    message_tracker.register_message("track2.mp4", list_msg, MessageType.DOWNLOAD_LIST)
 
     async def _run():
         await _update_tracked_messages("track2.mp4", st)
@@ -544,7 +543,7 @@ def test_update_tracked_messages_skips_frozen_list_message(monkeypatch):
     list_msg = FakeMsg(msg_id=11)
     st = DownloadState("skip.mp4", "/tmp/skip.mp4", 100)
 
-    message_tracker.register_message("skip.mp4", list_msg, MessageType.DOWNLOAD_LIST, 1)
+    message_tracker.register_message("skip.mp4", list_msg, MessageType.DOWNLOAD_LIST)
     frozen_list_msg_ids.add(11)
 
     async def _run():
@@ -565,7 +564,7 @@ def test_update_tracked_messages_updates_non_frozen_list_message(monkeypatch):
     list_msg = FakeMsg(msg_id=12)
     st = DownloadState("ok.mp4", "/tmp/ok.mp4", 100)
 
-    message_tracker.register_message("ok.mp4", list_msg, MessageType.DOWNLOAD_LIST, 1)
+    message_tracker.register_message("ok.mp4", list_msg, MessageType.DOWNLOAD_LIST)
     # Freeze a different message
     frozen_list_msg_ids.add(99)
 
@@ -590,8 +589,8 @@ def test_fan_out_mirrors_edits_non_primary_mirrors():
     st = DownloadState("fan.mp4", "/tmp/fan.mp4", 100)
     st.message = primary
 
-    message_tracker.register_message("fan.mp4", primary, MessageType.PROGRESS, 1)
-    message_tracker.register_message("fan.mp4", mirror, MessageType.PROGRESS, 2)
+    message_tracker.register_message("fan.mp4", primary, MessageType.PROGRESS)
+    message_tracker.register_message("fan.mp4", mirror, MessageType.PROGRESS)
 
     async def _run():
         await _fan_out_mirrors(st, "progress text", {})
@@ -621,7 +620,7 @@ def test_fan_out_mirrors_fallback_on_failure():
     st = DownloadState("fall.mp4", "/tmp/fall.mp4", 100)
     st.message = primary
 
-    message_tracker.register_message("fall.mp4", mirror, MessageType.PROGRESS, 2)
+    message_tracker.register_message("fall.mp4", mirror, MessageType.PROGRESS)
     tracked = message_tracker.get_messages("fall.mp4", MessageType.PROGRESS)[0]
 
     async def _run():

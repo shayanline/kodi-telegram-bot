@@ -41,11 +41,8 @@ async def wait_if_paused(state: DownloadState):
         raise CancelledDownload
 
 
-def create_progress_callback(filename: str, start: float, rate: RateLimiter, msg, state: DownloadState | None):
+def create_progress_callback(filename: str, start: float, rate: RateLimiter, msg, state: DownloadState):
     last = {"received": 0, "change": start}
-
-    def _build_edit_kwargs():
-        return {"buttons": build_buttons(state)} if state else {}
 
     async def send_tg_update(percent: int, received: int, total: int, speed: str):
         bar = "▓" * (percent // 10) + "░" * (10 - percent // 10)
@@ -55,7 +52,7 @@ def create_progress_callback(filename: str, start: float, rate: RateLimiter, msg
             f"Progress: {bar} {percent}%\n"
             f"Size: {utils.humanize_size(received)}/{utils.humanize_size(total)}\n"
             f"Speed: {speed}/s",
-            **_build_edit_kwargs(),
+            buttons=build_buttons(state),
         )
 
     async def progress(received: int, total: int):
@@ -66,10 +63,9 @@ def create_progress_callback(filename: str, start: float, rate: RateLimiter, msg
             return
         percent, speed = _calc(received, total, now - start)
 
-        if state:
-            state.update_progress(received, percent, speed)
+        state.update_progress(received, percent, speed)
 
-        if not (state and state.confirming_cancel) and rate.telegram_ok():
+        if not state.confirming_cancel and rate.telegram_ok():
             await send_tg_update(percent, received, total, speed)
 
         # Memory warning and download progress are independent Kodi notifications;
@@ -88,9 +84,7 @@ def create_progress_callback(filename: str, start: float, rate: RateLimiter, msg
     return progress
 
 
-async def _check_state(state: DownloadState | None) -> bool:  # returns True if cancelled
-    if not state:
-        return False
+async def _check_state(state: DownloadState) -> bool:  # returns True if cancelled
     if state.cancelled:
         return True
     await wait_if_paused(state)

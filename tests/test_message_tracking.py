@@ -23,13 +23,12 @@ def test_message_tracker_basic_operations():
     msg = MockMessage(1)
 
     # Register a message
-    tracker.register_message("test_file.mp4", msg, MessageType.PROGRESS, 123)
+    tracker.register_message("test_file.mp4", msg, MessageType.PROGRESS)
 
     # Check it's registered
     messages = tracker.get_messages("test_file.mp4")
     assert len(messages) == 1
     assert messages[0].message_type == MessageType.PROGRESS
-    assert messages[0].user_id == 123
 
     # Check filtered retrieval
     progress_msgs = tracker.get_messages("test_file.mp4", MessageType.PROGRESS)
@@ -50,8 +49,8 @@ def test_message_tracker_multiple_messages():
     progress_msg = MockMessage(1)
     list_msg = MockMessage(2)
 
-    tracker.register_message("test_file.mp4", progress_msg, MessageType.PROGRESS, 123)
-    tracker.register_message("test_file.mp4", list_msg, MessageType.DOWNLOAD_LIST, 123)
+    tracker.register_message("test_file.mp4", progress_msg, MessageType.PROGRESS)
+    tracker.register_message("test_file.mp4", list_msg, MessageType.DOWNLOAD_LIST)
 
     all_messages = tracker.get_messages("test_file.mp4")
     assert len(all_messages) == 2
@@ -100,8 +99,8 @@ def test_message_tracker_cleanup():
     msg1 = MockMessage(1)
     msg2 = MockMessage(2)
 
-    tracker.register_message("test_file.mp4", msg1, MessageType.PROGRESS, 123)
-    tracker.register_message("test_file.mp4", msg2, MessageType.DOWNLOAD_LIST, 123)
+    tracker.register_message("test_file.mp4", msg1, MessageType.PROGRESS)
+    tracker.register_message("test_file.mp4", msg2, MessageType.DOWNLOAD_LIST)
 
     assert len(tracker.get_messages("test_file.mp4")) == 2
 
@@ -119,9 +118,9 @@ def test_message_tracker_filtering():
     msg2 = MockMessage(2)
     msg3 = MockMessage(3)
 
-    tracker.register_message("test_file.mp4", msg1, MessageType.PROGRESS, 123)
-    tracker.register_message("test_file.mp4", msg2, MessageType.DOWNLOAD_LIST, 123)
-    tracker.register_message("other_file.mp4", msg3, MessageType.QUEUE_LIST, 456)
+    tracker.register_message("test_file.mp4", msg1, MessageType.PROGRESS)
+    tracker.register_message("test_file.mp4", msg2, MessageType.DOWNLOAD_LIST)
+    tracker.register_message("other_file.mp4", msg3, MessageType.QUEUE_LIST)
 
     # Test filtering by type
     progress_msgs = tracker.get_messages("test_file.mp4", MessageType.PROGRESS)
@@ -143,11 +142,10 @@ def test_message_tracker_filtering():
 def test_tracked_message_basic_functionality():
     """Test TrackedMessage basic functionality."""
     msg = MockMessage(1)
-    tracked = TrackedMessage(msg, MessageType.PROGRESS, 123)
+    tracked = TrackedMessage(msg, MessageType.PROGRESS)
 
     assert tracked.message == msg
     assert tracked.message_type == MessageType.PROGRESS
-    assert tracked.user_id == 123
 
 
 def test_download_state_basic_functionality():
