@@ -9,6 +9,7 @@ from telethon import TelegramClient
 
 import config
 import kodi
+import throttle
 from downloader.list_commands import update_all_lists
 from downloader.manager import register_handlers, validate_size
 from downloader.queue import queue
@@ -71,6 +72,7 @@ async def _setup_client():
     register_filemanager(client)
     register_kodi_remote(client)
     register_kodi_restart(client)
+    throttle.start_publisher()
     await client.start(bot_token=config.BOT_TOKEN)
     await _register_bot_commands(client)
     try:  # Explicit catch-up so we know backlog is processed before announcing ready.

@@ -1,35 +1,49 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock
 
 from telethon.errors import FloodWaitError, MessageNotModifiedError
 
 import throttle
 
-# ── serialized decorator ──
+# Save original _enqueue before conftest patches it
+_real_enqueue = throttle._enqueue
 
 
-def test_serialized_runs_function():
-    @throttle.serialized
-    async def handler(x):
-        return x * 2
+def _run_with_publisher(coro):
+    """Run a coroutine with a fresh publisher, cleaning up afterward."""
 
-    assert asyncio.run(handler(5)) == 10
+    async def _wrapper():
+        # Restore real _enqueue so the publisher queue is exercised
+        throttle._enqueue = _real_enqueue
+        throttle._last_call = 0.0
+        throttle._seq = 0
+        throttle._TG_MIN_INTERVAL = 0
+        throttle.start_publisher()
+        try:
+            return await coro
+        finally:
+            throttle.stop_publisher()
+
+    return asyncio.run(_wrapper())
 
 
-def test_serialized_preserves_order():
-    results: list[int] = []
+# ── _Item ordering ──
 
-    @throttle.serialized
-    async def handler(x):
-        results.append(x)
+
+def test_item_ordering():
+    """Lower priority number is higher priority; ties broken by sequence."""
 
     async def _run():
-        await asyncio.gather(handler(1), handler(2), handler(3))
+        loop = asyncio.get_running_loop()
+        items = [
+            throttle._Item(2, 3, loop.create_future(), None, (), {}),
+            throttle._Item(0, 2, loop.create_future(), None, (), {}),
+            throttle._Item(1, 1, loop.create_future(), None, (), {}),
+        ]
+        assert sorted(items) == [items[1], items[2], items[0]]
 
     asyncio.run(_run())
-    assert results == [1, 2, 3]
 
 
 # ── edit_message ──
@@ -41,7 +55,11 @@ def test_edit_message_success():
             self.text = text
 
     msg = Msg()
-    result = asyncio.run(throttle.edit_message(msg, "hello"))
+
+    async def go():
+        return await throttle.edit_message(msg, "hello")
+
+    result = _run_with_publisher(go())
     assert result is msg
 
 
@@ -51,7 +69,7 @@ def test_edit_message_not_modified():
             raise MessageNotModifiedError(None)
 
     msg = Msg()
-    result = asyncio.run(throttle.edit_message(msg, "hello"))
+    result = _run_with_publisher(throttle.edit_message(msg, "hello"))
     assert result is msg
 
 
@@ -60,7 +78,7 @@ def test_edit_message_other_error():
         async def edit(self, text, **kw):
             raise RuntimeError("gone")
 
-    result = asyncio.run(throttle.edit_message(Msg(), "hello"))
+    result = _run_with_publisher(throttle.edit_message(Msg(), "hello"))
     assert result is None
 
 
@@ -72,7 +90,7 @@ def test_send_message_success():
         async def respond(self, text, **kw):
             return "new_msg"
 
-    result = asyncio.run(throttle.send_message(Target(), "hi"))
+    result = _run_with_publisher(throttle.send_message(Target(), "hi"))
     assert result == "new_msg"
 
 
@@ -81,7 +99,7 @@ def test_send_message_error():
         async def respond(self, text, **kw):
             raise RuntimeError("fail")
 
-    result = asyncio.run(throttle.send_message(Target(), "hi"))
+    result = _run_with_publisher(throttle.send_message(Target(), "hi"))
     assert result is None
 
 
@@ -108,73 +126,57 @@ def test_answer_callback_suppresses_error():
     asyncio.run(throttle.answer_callback(Ev(), "ok"))
 
 
-# ── FloodWaitError retry ──
+# ── FloodWait retry ──
 
 
-def test_tg_call_retries_on_flood_wait(monkeypatch):
-    monkeypatch.setattr(throttle, "_TG_MIN_INTERVAL", 0)
-    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
-
+def test_flood_wait_retries():
+    """Publisher retries the call after a FloodWaitError."""
     attempt = {"n": 0}
 
-    async def flaky(*a, **k):
-        attempt["n"] += 1
-        if attempt["n"] == 1:
-            raise FloodWaitError(request=None, capture=0)
-        return "ok"
+    class Msg:
+        async def edit(self, text, **kw):
+            attempt["n"] += 1
+            if attempt["n"] == 1:
+                raise FloodWaitError(request=None, capture=0)
 
+    msg = Msg()
+    result = _run_with_publisher(throttle.edit_message(msg, "hello"))
+    assert result is msg
+    assert attempt["n"] == 2
+
+
+# ── Priority integration ──
+
+
+def test_priority_constants():
+    assert throttle.PRIORITY_USER < throttle.PRIORITY_EVENT < throttle.PRIORITY_PROGRESS
+
+
+def test_edit_message_accepts_priority():
+    class Msg:
+        async def edit(self, text, **kw):
+            pass
+
+    result = _run_with_publisher(throttle.edit_message(Msg(), "hi", priority=throttle.PRIORITY_PROGRESS))
+    assert result is not None
+
+
+def test_send_message_accepts_priority():
+    class Target:
+        async def respond(self, text, **kw):
+            return "msg"
+
+    result = _run_with_publisher(throttle.send_message(Target(), "hi", priority=throttle.PRIORITY_EVENT))
+    assert result == "msg"
+
+
+def test_start_publisher_creates_queue_and_task():
     async def _run():
-        result = await throttle._tg_call(flaky)
-        assert result == "ok"
-        assert attempt["n"] == 2
-
-    asyncio.run(_run())
-
-
-def test_tg_call_releases_lock_during_flood_wait(monkeypatch):
-    """_tg_lock must be released during the FloodWait sleep so other calls proceed."""
-    monkeypatch.setattr(throttle, "_TG_MIN_INTERVAL", 0)
-    lock_was_free = False
-
-    real_sleep = asyncio.sleep
-
-    async def spy_sleep(seconds, *a, **k):
-        nonlocal lock_was_free
-        # During the flood-wait sleep _tg_lock should NOT be held
-        lock_was_free = not throttle._tg_lock.locked()
-        await real_sleep(0)
-
-    monkeypatch.setattr(asyncio, "sleep", spy_sleep)
-
-    attempt = {"n": 0}
-
-    async def flaky(*a, **k):
-        attempt["n"] += 1
-        if attempt["n"] == 1:
-            raise FloodWaitError(request=None, capture=0)
-        return "ok"
-
-    async def _run():
-        await throttle._tg_call(flaky)
-        assert lock_was_free, "_tg_lock was held during FloodWait sleep"
-
-    asyncio.run(_run())
-
-
-def test_answer_callback_bypasses_tg_lock():
-    """answer_callback must not block behind _tg_lock."""
-
-    class Ev:
-        answered = False
-
-        async def answer(self, text=None, **kw):
-            self.answered = True
-
-    async def _run():
-        # Hold the lock — answer_callback should still work
-        async with throttle._tg_lock:
-            ev = Ev()
-            await throttle.answer_callback(ev, "ok")
-            assert ev.answered
+        throttle._queue = None
+        throttle._publisher_task = None
+        throttle.start_publisher()
+        assert throttle._queue is not None
+        assert throttle._publisher_task is not None
+        throttle.stop_publisher()
 
     asyncio.run(_run())

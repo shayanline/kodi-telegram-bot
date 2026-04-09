@@ -154,21 +154,37 @@ def _queue_position(filename: str) -> int:
 # ── Per-chat list management ──
 
 
-async def update_all_lists() -> None:
+async def _edit_list_via_event(event, cl: ChatDownloadList | None) -> None:
+    """Edit the callback message to show the current list; delete if empty."""
+    page = cl.page if cl else 0
+    text, buttons = build_unified_list(page)
+    if not buttons:
+        with contextlib.suppress(Exception):
+            await event.delete()
+        if cl:
+            chat_lists.pop(cl.chat_id, None)
+        return
+    await throttle.edit_message(event, text, buttons=buttons)
+    if cl:
+        with contextlib.suppress(Exception):
+            cl.message = await event.get_message()
+
+
+async def update_all_lists(*, priority: int = throttle.PRIORITY_USER) -> None:
     """Update all tracked chat list messages with current state."""
     for chat_id, cl in list(chat_lists.items()):
         if cl.confirming or cl.message is None:
             continue
         try:
             text, buttons = build_unified_list(cl.page)
-            result = await throttle.edit_message(cl.message, text, buttons=buttons)
+            if not buttons:
+                with contextlib.suppress(Exception):
+                    await cl.message.delete()
+                chat_lists.pop(chat_id, None)
+                continue
+            result = await throttle.edit_message(cl.message, text, buttons=buttons, priority=priority)
             if result is None:
-                # Edit failed (message too old or deleted) — send replacement
-                new_msg = await throttle.send_message(cl.message, text, buttons=buttons)
-                if new_msg:
-                    cl.message = new_msg
-                else:
-                    chat_lists.pop(chat_id, None)
+                chat_lists.pop(chat_id, None)
         except Exception:
             pass
 
@@ -181,7 +197,8 @@ async def _send_list_message(event, chat_id: int) -> None:
             await cl.message.delete()
 
     text, buttons = build_unified_list(page=0)
-    msg = await throttle.send_message(event, text, buttons=buttons)
+    send_kw: dict = {"buttons": buttons} if buttons else {}
+    msg = await throttle.send_message(event, text, **send_kw)
     if msg:
         chat_lists[chat_id] = ChatDownloadList(chat_id=chat_id, message=msg, page=0)
 
@@ -202,7 +219,6 @@ def _register_downloads_handler(client: TelegramClient):
             func=lambda e: e.is_private and not e.document and (e.raw_text or "").strip().lower() == "/downloads"
         )
     )
-    @throttle.serialized
     async def _downloads(event):
         sender = await event.get_sender()
         user_id = getattr(sender, "id", None)
@@ -216,7 +232,6 @@ def _register_downloads_handler(client: TelegramClient):
 
 def _register_list_callbacks(client: TelegramClient):
     @client.on(events.CallbackQuery(pattern=b"dl_page:"))
-    @throttle.serialized
     async def _page(event):
         data = event.data.decode()
         page = int(data.split(":", 1)[1])
@@ -249,7 +264,6 @@ def _register_info_noop(client: TelegramClient):
 
 def _register_pause_resume(client: TelegramClient):
     @client.on(events.CallbackQuery(pattern=b"dl_(pause|resume):"))
-    @throttle.serialized
     async def _prc(event):
         data = event.data.decode()
         action, file_id = data.split(":", 1)
@@ -261,6 +275,8 @@ def _register_pause_resume(client: TelegramClient):
         if not st or st.cancelled:
             await throttle.answer_callback(event, _NOT_FOUND, alert=False)
             return
+        chat_id = event.chat_id or event.sender_id or 0
+        cl = chat_lists.get(chat_id)
         if action == "dl_pause":
             if st.paused:
                 await throttle.answer_callback(event, "Already paused", alert=False)
@@ -273,12 +289,11 @@ def _register_pause_resume(client: TelegramClient):
                 return
             st.mark_resumed()
             await throttle.answer_callback(event, "Resuming")
-        await update_all_lists()
+        await _edit_list_via_event(event, cl)
 
 
 def _register_cancel(client: TelegramClient):
     @client.on(events.CallbackQuery(pattern=b"dl_cancel:"))
-    @throttle.serialized
     async def _cancel(event):
         file_id = event.data.decode().split(":", 1)[1]
         filename = resolve_file_id(file_id)
@@ -307,7 +322,6 @@ def _register_cancel(client: TelegramClient):
 
 def _register_cancel_confirm(client: TelegramClient):
     @client.on(events.CallbackQuery(pattern=b"dl_c(y|n):"))
-    @throttle.serialized
     async def _cancel_confirm(event):
         data = event.data.decode()
         colon_idx = data.index(":")
@@ -328,18 +342,17 @@ def _register_cancel_confirm(client: TelegramClient):
                     st.mark_cancelled()
                     _unblock_pending_deletion(filename)
                     await throttle.answer_callback(event, "Cancelling")
-                    await update_all_lists()
+                    await _edit_list_via_event(event, cl)
                     return
             await throttle.answer_callback(event, _NOT_FOUND, alert=False)
         else:
             await throttle.answer_callback(event)
 
-        await update_all_lists()
+        await _edit_list_via_event(event, cl)
 
 
 def _register_qcancel(client: TelegramClient):
     @client.on(events.CallbackQuery(pattern=b"dl_qcancel:"))
-    @throttle.serialized
     async def _qcancel(event):
         file_id = event.data.decode().split(":", 1)[1]
         filename = resolve_file_id(file_id)
@@ -388,7 +401,6 @@ def _register_qcancel(client: TelegramClient):
 
 def _register_qcancel_confirm(client: TelegramClient):
     @client.on(events.CallbackQuery(pattern=b"dl_qc(y|n):"))
-    @throttle.serialized
     async def _qcancel_confirm(event):
         data = event.data.decode()
         colon_idx = data.index(":")
@@ -408,7 +420,7 @@ def _register_qcancel_confirm(client: TelegramClient):
                 if queue.cancel(filename):
                     file_id_map.pop(file_id, None)
                     await throttle.answer_callback(event, "Cancelled")
-                    await update_all_lists()
+                    await _edit_list_via_event(event, cl)
                     return
                 # May have started — cancel active
                 st = states.get(filename)
@@ -416,18 +428,17 @@ def _register_qcancel_confirm(client: TelegramClient):
                     st.mark_cancelled()
                     _unblock_pending_deletion(filename)
                     await throttle.answer_callback(event, "Cancelling")
-                    await update_all_lists()
+                    await _edit_list_via_event(event, cl)
                     return
             await throttle.answer_callback(event, _NOT_FOUND, alert=False)
         else:
             await throttle.answer_callback(event)
 
-        await update_all_lists()
+        await _edit_list_via_event(event, cl)
 
 
 def _register_cancel_all(client: TelegramClient):
     @client.on(events.CallbackQuery(pattern=rb"dl_cancelall$"))
-    @throttle.serialized
     async def _cancel_all(event):
         active = [fn for fn, st in states.items() if not st.cancelled and not st.completed]
         queued = list(queue.items)
@@ -452,7 +463,6 @@ def _register_cancel_all(client: TelegramClient):
 
 def _register_cancel_all_confirm(client: TelegramClient):
     @client.on(events.CallbackQuery(pattern=rb"dl_ca(y|n)$"))
-    @throttle.serialized
     async def _cancel_all_confirm(event):
         choice = event.data.decode()
         confirmed = choice == "dl_cay"
@@ -476,7 +486,7 @@ def _register_cancel_all_confirm(client: TelegramClient):
             log.info("Cancel-all: cancelled %d downloads", cancelled)
         else:
             await throttle.answer_callback(event)
-        await update_all_lists()
+        await _edit_list_via_event(event, cl)
 
 
 def _unblock_pending_deletion(filename: str) -> None:

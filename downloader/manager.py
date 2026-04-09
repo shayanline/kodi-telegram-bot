@@ -86,10 +86,6 @@ def _spawn(coro: Any) -> None:
 async def _periodic_list_updater():
     """Periodically update all tracked download list messages.
 
-    This is the ONLY background caller of ``update_all_lists()``.  It
-    acquires ``handler_lock`` so the ``cl.confirming`` check inside
-    ``update_all_lists`` is always atomic with handler-triggered edits.
-
     Progress ticks are naturally batched: no matter how many arrive in
     five seconds, only one Telegram edit happens per tracked list.
     """
@@ -100,18 +96,17 @@ async def _periodic_list_updater():
         if not has_work and not was_active:
             continue
         was_active = has_work
-        async with throttle.handler_lock:
-            with contextlib.suppress(Exception):
-                await update_all_lists()
+        with contextlib.suppress(Exception):
+            await update_all_lists(priority=throttle.PRIORITY_PROGRESS)
 
 
-async def _safe_edit(msg, text: str, buttons=None):
+async def _safe_edit(msg, text: str, buttons=None, *, priority: int = throttle.PRIORITY_USER):
     """Edit a message, falling back to a new response if editing fails."""
-    result = await throttle.edit_message(msg, text, buttons=buttons)
+    result = await throttle.edit_message(msg, text, buttons=buttons, priority=priority)
     if result is not None:
         return result
     log.debug("Edit failed, sending fallback message")
-    return await throttle.send_message(msg, text, buttons=buttons)
+    return await throttle.send_message(msg, text, buttons=buttons, priority=priority)
 
 
 def filename_for_document(document: Document) -> str:
@@ -367,7 +362,10 @@ async def run_download(
     except Exception as e:
         await _handle_error(e, state, filename, path, event)
     finally:
+        was_cancelled = state.cancelled
         _final_cleanup(filename)
+        if not was_cancelled:
+            await update_all_lists()
 
 
 def _init_state(filename: str, path: str, size: int, event: events.NewMessage.Event) -> DownloadState:
@@ -406,6 +404,7 @@ async def _post_download_check(
             event,
             f"❌ Download incomplete: {filename}. Expected {utils.humanize_size(expected_size)}",
             reply_to=getattr(event, "id", None),
+            priority=throttle.PRIORITY_EVENT,
         )
         await kodi.notify("Download Failed", f"Incomplete: {filename}")
         log.error("Incomplete download %s", filename)
@@ -420,7 +419,7 @@ async def _handle_success(filename: str, path: str, state: DownloadState, event:
         if playing
         else f"✅ Download complete: {filename}\nPlaying on Kodi..."
     )
-    await throttle.send_message(event, text, reply_to=getattr(event, "id", None))
+    await throttle.send_message(event, text, reply_to=getattr(event, "id", None), priority=throttle.PRIORITY_EVENT)
     if not playing:
         await kodi.play(path)
     await kodi.notify("Download Complete", filename)
@@ -546,7 +545,6 @@ async def _start_direct_download(client: TelegramClient, event, document, filena
 
 def _register_download_handler(client: TelegramClient):
     @client.on(events.NewMessage(func=lambda e: e.is_private and e.document))
-    @throttle.serialized
     async def _download(event):
         sender = await event.get_sender()
         uid = getattr(sender, "id", None)
@@ -626,7 +624,6 @@ def _register_start_handler(client: TelegramClient):
     )
 
     @client.on(events.NewMessage(func=lambda e: e.is_private and (e.raw_text or "").strip().lower() == "/start"))
-    @throttle.serialized
     async def _start(event):
         sender = await event.get_sender()
         if not config.is_user_allowed(getattr(sender, "id", None), getattr(sender, "username", None)):
@@ -640,7 +637,6 @@ def _register_deletion_callbacks(client: TelegramClient):
     no_buttons = ReplyInlineMarkup(rows=[])
 
     @client.on(events.CallbackQuery(pattern=pattern))
-    @throttle.serialized
     async def _del(event):
         data = event.data.decode()
         action, pid = data.split(":", 1)
@@ -675,7 +671,6 @@ def _register_deletion_callbacks(client: TelegramClient):
 
 def _register_category_selection(client: TelegramClient):
     @client.on(events.CallbackQuery(pattern=b"cat[mso]:"))
-    @throttle.serialized
     async def _cat(event):
         data = event.data.decode()
         prefix, file_id = data.split(":", 1)

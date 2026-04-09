@@ -84,7 +84,7 @@ def test_render_playback_no_label():
 def test_render_navigation():
     text, buttons = kodiremote._render_navigation()
     assert "Navigation" in text
-    # 6 rows: Up, Left/OK/Right, Down, Back/Home/Info, Menu/OSD, Playback/Refresh
+    # 5 rows: Up, Left/OK/Right, Down, Back/Home/Info, Menu/OSD, Playback
     assert len(buttons) == 6
     # D-pad center row has 3 buttons
     assert len(buttons[1]) == 3
@@ -448,38 +448,6 @@ def test_callback_switch_to_playback(monkeypatch):
 
     asyncio.run(_run())
     assert event._edited
-
-
-def test_callback_refresh_playback(monkeypatch):
-    _mock_kodi_idle(monkeypatch)
-    event = FakeEvent(b"k:rf", message_text="Kodi Remote")
-
-    async def _run():
-        msg = await event.get_message()
-        is_nav = msg and "Navigation" in (msg.text or "")
-        assert not is_nav
-        await kodiremote._refresh_playback(event)
-        await event.answer("Refreshed")
-
-    asyncio.run(_run())
-    assert event._edited
-    assert event._answer_text == "Refreshed"
-
-
-def test_callback_refresh_navigation(monkeypatch):
-    event = FakeEvent(b"k:rf", message_text="Kodi Remote — Navigation")
-
-    async def _run():
-        msg = await event.get_message()
-        is_nav = msg and "Navigation" in (msg.text or "")
-        assert is_nav
-        text, buttons = kodiremote._render_navigation()
-        await throttle.edit_message(event, text, buttons=buttons, parse_mode="md")
-        await event.answer("Refreshed")
-
-    asyncio.run(_run())
-    assert event._edited
-    assert event._answer_text == "Refreshed"
 
 
 def test_callback_input_navigation(monkeypatch):

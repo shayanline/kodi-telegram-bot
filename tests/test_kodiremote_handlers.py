@@ -5,7 +5,6 @@ import asyncio
 import config
 import kodi
 import kodiremote
-import throttle
 
 # ── Fake helpers ──
 
@@ -57,12 +56,6 @@ class FakeEvent:
 
     async def get_message(self):
         return type("Msg", (), {"text": self._message_text})()
-
-
-def _fresh_locks(monkeypatch):
-    """Replace throttle locks so they work in a new asyncio.run() event loop."""
-    monkeypatch.setattr(throttle, "handler_lock", asyncio.Lock())
-    monkeypatch.setattr(throttle, "_tg_lock", asyncio.Lock())
 
 
 def _register():
@@ -127,7 +120,6 @@ def test_register_creates_two_handlers():
 
 def test_cmd_authorized(monkeypatch):
     """Lines 198-205: authorized user receives remote control message."""
-    _fresh_locks(monkeypatch)
     monkeypatch.setattr(config, "ALLOWED_USER_IDS", set())
     monkeypatch.setattr(config, "ALLOWED_USERNAMES", set())
     _mock_kodi_idle(monkeypatch)
@@ -142,7 +134,6 @@ def test_cmd_authorized(monkeypatch):
 
 def test_cmd_unauthorized(monkeypatch):
     """Lines 199-202: unauthorized user gets rejected."""
-    _fresh_locks(monkeypatch)
     monkeypatch.setattr(config, "ALLOWED_USER_IDS", {99999})
     monkeypatch.setattr(config, "ALLOWED_USERNAMES", set())
 
@@ -159,7 +150,6 @@ def test_cmd_unauthorized(monkeypatch):
 
 def test_cb_playback_actions(monkeypatch):
     """Lines 214-225: playback actions (pp, st, nx, pv, ff, rw) dispatch correctly."""
-    _fresh_locks(monkeypatch)
     _mock_kodi_playing(monkeypatch)
     calls = []
 
@@ -204,7 +194,6 @@ def test_cb_playback_actions(monkeypatch):
 
 def test_cb_volume_up(monkeypatch):
     """Lines 227-231: k:vu increases volume by _VOL_STEP."""
-    _fresh_locks(monkeypatch)
     _mock_kodi_idle(monkeypatch)
     vol_set = []
 
@@ -222,7 +211,6 @@ def test_cb_volume_up(monkeypatch):
 
 def test_cb_volume_down(monkeypatch):
     """Lines 232-236: k:vd decreases volume by _VOL_STEP."""
-    _fresh_locks(monkeypatch)
     _mock_kodi_idle(monkeypatch)
     vol_set = []
 
@@ -240,7 +228,6 @@ def test_cb_volume_down(monkeypatch):
 
 def test_cb_mute(monkeypatch):
     """Lines 237-240: k:mu toggles mute."""
-    _fresh_locks(monkeypatch)
     _mock_kodi_idle(monkeypatch)
     calls = []
 
@@ -262,8 +249,6 @@ def test_cb_mute(monkeypatch):
 
 def test_cb_switch_to_navigation(monkeypatch):
     """Lines 242-245: k:nv switches to navigation view."""
-    _fresh_locks(monkeypatch)
-
     _, cb = _register()
     event = FakeEvent(data=b"k:nv")
 
@@ -275,7 +260,6 @@ def test_cb_switch_to_navigation(monkeypatch):
 
 def test_cb_switch_to_playback(monkeypatch):
     """Lines 246-248: k:pb switches to playback view."""
-    _fresh_locks(monkeypatch)
     _mock_kodi_idle(monkeypatch)
 
     _, cb = _register()
@@ -287,59 +271,11 @@ def test_cb_switch_to_playback(monkeypatch):
     assert event._answered
 
 
-# ── Callback handler — refresh ──
-
-
-def test_cb_refresh_playback(monkeypatch):
-    """Lines 250-261: k:rf refreshes playback view when not in navigation."""
-    _fresh_locks(monkeypatch)
-    _mock_kodi_idle(monkeypatch)
-
-    _, cb = _register()
-    event = FakeEvent(data=b"k:rf", message_text="Kodi Remote")
-
-    asyncio.run(cb(event))
-    assert event._edited is not None
-    assert event._answer_text == "Refreshed"
-
-
-def test_cb_refresh_navigation(monkeypatch):
-    """Lines 250-258: k:rf refreshes navigation view when message contains Navigation."""
-    _fresh_locks(monkeypatch)
-
-    _, cb = _register()
-    event = FakeEvent(data=b"k:rf", message_text="Kodi Remote — Navigation")
-
-    asyncio.run(cb(event))
-    assert event._edited is not None
-    assert "Navigation" in event._edited
-    assert event._answer_text == "Refreshed"
-
-
-def test_cb_refresh_get_message_error(monkeypatch):
-    """Lines 253-255: exception in get_message defaults to playback refresh."""
-    _fresh_locks(monkeypatch)
-    _mock_kodi_idle(monkeypatch)
-
-    _, cb = _register()
-
-    class _ErrorEvent(FakeEvent):
-        async def get_message(self):
-            raise RuntimeError("message gone")
-
-    event = _ErrorEvent(data=b"k:rf")
-
-    asyncio.run(cb(event))
-    assert event._edited is not None
-    assert event._answer_text == "Refreshed"
-
-
 # ── Callback handler — navigation input ──
 
 
 def test_cb_navigation_input(monkeypatch):
     """Lines 263-265: navigation input commands dispatched via _INPUT_MAP."""
-    _fresh_locks(monkeypatch)
     calls = []
 
     async def fake_input(name):
@@ -360,8 +296,6 @@ def test_cb_navigation_input(monkeypatch):
 
 def test_cb_unknown_data(monkeypatch):
     """Lines 266-268: unknown callback data is handled gracefully."""
-    _fresh_locks(monkeypatch)
-
     _, cb = _register()
     event = FakeEvent(data=b"k:zz")
 

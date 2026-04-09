@@ -5,7 +5,6 @@ import asyncio
 import config
 import kodi
 import kodirestart
-import throttle
 
 # ── Fake helpers ──
 
@@ -53,12 +52,6 @@ class FakeEvent:
         self._answered = True
 
 
-def _fresh_locks(monkeypatch):
-    """Replace throttle locks so they work in a new asyncio.run() event loop."""
-    monkeypatch.setattr(throttle, "handler_lock", asyncio.Lock())
-    monkeypatch.setattr(throttle, "_tg_lock", asyncio.Lock())
-
-
 def _register():
     """Register handlers on a FakeClient and return (cmd_handler, cb_handler)."""
     client = FakeClient()
@@ -82,7 +75,6 @@ def test_register_creates_two_handlers():
 
 def test_cmd_unauthorized(monkeypatch):
     """Lines 46-49: unauthorized user gets rejected."""
-    _fresh_locks(monkeypatch)
     monkeypatch.setattr(config, "ALLOWED_USER_IDS", {99999})
     monkeypatch.setattr(config, "ALLOWED_USERNAMES", set())
 
@@ -96,7 +88,6 @@ def test_cmd_unauthorized(monkeypatch):
 
 def test_cmd_no_start_cmd(monkeypatch):
     """Lines 50-52: empty KODI_START_CMD shows setup instructions."""
-    _fresh_locks(monkeypatch)
     monkeypatch.setattr(config, "ALLOWED_USER_IDS", set())
     monkeypatch.setattr(config, "ALLOWED_USERNAMES", set())
     monkeypatch.setattr(config, "KODI_START_CMD", "")
@@ -111,7 +102,6 @@ def test_cmd_no_start_cmd(monkeypatch):
 
 def test_cmd_shows_confirmation(monkeypatch):
     """Lines 53-60: configured KODI_START_CMD shows confirmation prompt."""
-    _fresh_locks(monkeypatch)
     monkeypatch.setattr(config, "ALLOWED_USER_IDS", set())
     monkeypatch.setattr(config, "ALLOWED_USERNAMES", set())
     monkeypatch.setattr(config, "KODI_START_CMD", "echo start")
@@ -129,8 +119,6 @@ def test_cmd_shows_confirmation(monkeypatch):
 
 def test_cb_cancel(monkeypatch):
     """Lines 67-70: cancel button edits message and answers."""
-    _fresh_locks(monkeypatch)
-
     _, cb_handler = _register()
     event = FakeEvent(data=b"kr:n")
 
@@ -142,9 +130,9 @@ def test_cb_cancel(monkeypatch):
 
 def test_cb_confirm_restart(monkeypatch):
     """Lines 71-73: confirm triggers _do_restart flow."""
-    _fresh_locks(monkeypatch)
     monkeypatch.setattr(config, "KODI_START_CMD", "echo ok")
     monkeypatch.setattr(kodirestart, "_EXIT_POLL_INTERVAL", 0)
+    monkeypatch.setattr(kodirestart, "_START_DELAY", 0)
 
     async def fake_quit():
         pass
@@ -184,7 +172,6 @@ def test_wait_for_exit_polls_then_exits(monkeypatch):
     async def fake_is_alive():
         nonlocal call_count
         call_count += 1
-        # Alive on first poll, dead on second
         return call_count <= 1
 
     monkeypatch.setattr(kodi, "is_alive", fake_is_alive)
@@ -201,9 +188,9 @@ def test_wait_for_exit_polls_then_exits(monkeypatch):
 
 def test_do_restart_generic_exception(monkeypatch):
     """Lines 114-116: generic exception from subprocess is caught and reported."""
-    _fresh_locks(monkeypatch)
     monkeypatch.setattr(config, "KODI_START_CMD", "echo ok")
     monkeypatch.setattr(kodirestart, "_EXIT_POLL_INTERVAL", 0)
+    monkeypatch.setattr(kodirestart, "_START_DELAY", 0)
 
     async def fake_quit():
         pass

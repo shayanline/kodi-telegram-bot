@@ -399,7 +399,6 @@ def _register_files_command(client: TelegramClient) -> None:
             func=lambda e: e.is_private and not e.document and (e.raw_text or "").strip().lower() == "/files"
         )
     )
-    @throttle.serialized
     async def _files(event):
         sender = await event.get_sender()
         if not config.is_user_allowed(getattr(sender, "id", None), getattr(sender, "username", None)):
@@ -411,7 +410,6 @@ def _register_files_command(client: TelegramClient) -> None:
 
 def _register_callbacks(client: TelegramClient) -> None:
     @client.on(events.CallbackQuery(pattern=rb"f:r:(\d+):([SND])"))
-    @throttle.serialized
     async def _root(event):
         page = int(event.pattern_match.group(1).decode())
         sort = event.pattern_match.group(2).decode()
@@ -420,7 +418,6 @@ def _register_callbacks(client: TelegramClient) -> None:
         await throttle.answer_callback(event)
 
     @client.on(events.CallbackQuery(pattern=rb"f:n:([a-f0-9]{8}):(\d+):([SND])"))
-    @throttle.serialized
     async def _navigate(event):
         match = event.pattern_match
         pid = match.group(1).decode()
@@ -436,7 +433,6 @@ def _register_callbacks(client: TelegramClient) -> None:
         await throttle.answer_callback(event)
 
     @client.on(events.CallbackQuery(pattern=rb"f:i:([a-f0-9]{8}):([SND])"))
-    @throttle.serialized
     async def _file_info(event):
         pid = event.pattern_match.group(1).decode()
         sort = event.pattern_match.group(2).decode()
@@ -453,7 +449,6 @@ def _register_callbacks(client: TelegramClient) -> None:
         await throttle.answer_callback(event)
 
     @client.on(events.CallbackQuery(pattern=rb"f:d:([a-f0-9]{8}):([SND])"))
-    @throttle.serialized
     async def _delete_prompt(event):
         pid = event.pattern_match.group(1).decode()
         sort = event.pattern_match.group(2).decode()
@@ -470,7 +465,6 @@ def _register_callbacks(client: TelegramClient) -> None:
         await throttle.answer_callback(event)
 
     @client.on(events.CallbackQuery(pattern=rb"f:y:([a-f0-9]{8}):([SND])"))
-    @throttle.serialized
     async def _delete_confirm(event):
         pid = event.pattern_match.group(1).decode()
         sort = event.pattern_match.group(2).decode()
@@ -499,7 +493,6 @@ def _register_callbacks(client: TelegramClient) -> None:
         await throttle.edit_message(event, text, buttons=buttons, parse_mode="md")
 
     @client.on(events.CallbackQuery(pattern=rb"f:x:([a-f0-9]{8}):([SND])"))
-    @throttle.serialized
     async def _delete_cancel(event):
         pid = event.pattern_match.group(1).decode()
         sort = event.pattern_match.group(2).decode()
@@ -524,7 +517,6 @@ def _register_callbacks(client: TelegramClient) -> None:
         await throttle.answer_callback(event)
 
     @client.on(events.CallbackQuery(pattern=b"f:noop"))
-    @throttle.serialized
     async def _noop(event):
         await throttle.answer_callback(event)
 

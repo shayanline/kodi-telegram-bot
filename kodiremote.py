@@ -103,7 +103,6 @@ def _render_playback(state: dict[str, Any]) -> tuple[str, list[list[Button]]]:
     buttons.append(
         [
             Button.inline("🧭 Navigation", data=b"k:nv"),
-            Button.inline("🔄 Refresh", data=b"k:rf"),
         ]
     )
 
@@ -135,7 +134,6 @@ def _render_navigation() -> tuple[str, list[list[Button]]]:
         ],
         [
             Button.inline("🎮 Playback", data=b"k:pb"),
-            Button.inline("🔄 Refresh", data=b"k:rf"),
         ],
     ]
     return "\n".join(lines), buttons
@@ -194,7 +192,6 @@ def _register_command(client: TelegramClient) -> None:
             func=lambda e: e.is_private and not e.document and (e.raw_text or "").strip().lower() == "/kodi"
         )
     )
-    @throttle.serialized
     async def _kodi_cmd(event):
         sender = await event.get_sender()
         if not config.is_user_allowed(getattr(sender, "id", None), getattr(sender, "username", None)):
@@ -207,7 +204,6 @@ def _register_command(client: TelegramClient) -> None:
 
 def _register_callbacks(client: TelegramClient) -> None:
     @client.on(events.CallbackQuery(pattern=rb"k:[a-z]{2}"))
-    @throttle.serialized
     async def _kodi_cb(event):
         data = event.data
         # Playback actions
@@ -246,19 +242,6 @@ def _register_callbacks(client: TelegramClient) -> None:
         elif data == b"k:pb":
             await _refresh_playback(event)
             await throttle.answer_callback(event)
-        # Refresh
-        elif data == b"k:rf":
-            try:
-                msg = await event.get_message()
-                is_nav = msg and "Navigation" in (msg.text or "")
-            except Exception:
-                is_nav = False
-            if is_nav:
-                text, buttons = _render_navigation()
-                await throttle.edit_message(event, text, buttons=buttons, parse_mode="md")
-            else:
-                await _refresh_playback(event)
-            await throttle.answer_callback(event, "Refreshed")
         # Navigation inputs
         elif data in _INPUT_MAP:
             await kodi.input_command(_INPUT_MAP[data])

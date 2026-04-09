@@ -613,6 +613,31 @@ def test_update_all_lists_edits_tracked_messages(monkeypatch):
         _cleanup()
 
 
+def test_update_all_lists_empty_deletes_message(monkeypatch):
+    """When all downloads finish, update_all_lists deletes the message and untracks the chat."""
+    deleted = []
+
+    msg = FakeMsg(10)
+    original_delete = msg.delete
+
+    async def tracking_delete():
+        deleted.append(msg.id)
+        return await original_delete()
+
+    msg.delete = tracking_delete
+    chat_lists[100] = ChatDownloadList(chat_id=100, message=msg, page=0)
+
+    monkeypatch.setattr(lc, "states", {})
+    monkeypatch.setattr(lc, "queue", FakeQueue())
+
+    try:
+        asyncio.run(update_all_lists())
+        assert len(deleted) == 1
+        assert 100 not in chat_lists
+    finally:
+        _cleanup()
+
+
 def test_update_all_lists_skips_confirming(monkeypatch):
     """Chats with confirming set are skipped during update."""
     edited_calls = []
@@ -622,7 +647,9 @@ def test_update_all_lists_skips_confirming(monkeypatch):
     chat_lists[200] = ChatDownloadList(chat_id=200, message=msg_confirm, page=0, confirming="some_id")
     chat_lists[201] = ChatDownloadList(chat_id=201, message=msg_ok, page=0)
 
-    monkeypatch.setattr(lc, "states", {})
+    # Give an active download so the list is non-empty (avoids delete path)
+    active = {"f.mp4": DownloadState("f.mp4", "/tmp/f.mp4", 100)}
+    monkeypatch.setattr(lc, "states", active)
     monkeypatch.setattr(lc, "queue", FakeQueue())
 
     async def fake_edit(target, text, **kw):
@@ -662,56 +689,23 @@ def test_update_all_lists_skips_none_message(monkeypatch):
         _cleanup()
 
 
-def test_update_all_lists_handles_edit_failure_sends_replacement(monkeypatch):
-    """When edit returns None (failure), a replacement message is sent."""
-    sent_calls = []
+def test_update_all_lists_edit_failure_removes_entry(monkeypatch):
+    """When edit returns None (failure), the chat is removed from tracking."""
     msg = FakeMsg(30)
-    replacement = FakeMsg(31)
     chat_lists[400] = ChatDownloadList(chat_id=400, message=msg, page=0)
 
-    monkeypatch.setattr(lc, "states", {})
+    active = {"f.mp4": DownloadState("f.mp4", "/tmp/f.mp4", 100)}
+    monkeypatch.setattr(lc, "states", active)
     monkeypatch.setattr(lc, "queue", FakeQueue())
 
     async def failing_edit(target, text, **kw):
         return None  # Simulate edit failure
 
-    async def fake_send(target, text, **kw):
-        sent_calls.append({"target_id": target.id})
-        return replacement
-
     monkeypatch.setattr(throttle, "edit_message", failing_edit)
-    monkeypatch.setattr(throttle, "send_message", fake_send)
 
     try:
         asyncio.run(update_all_lists())
-        assert len(sent_calls) == 1
-        assert sent_calls[0]["target_id"] == 30  # sent to original message
-        # Replacement message should be tracked
-        assert chat_lists[400].message is replacement
-    finally:
-        _cleanup()
-
-
-def test_update_all_lists_edit_failure_send_also_fails(monkeypatch):
-    """When both edit and send fail, the chat is removed from tracking."""
-    msg = FakeMsg(40)
-    chat_lists[500] = ChatDownloadList(chat_id=500, message=msg, page=0)
-
-    monkeypatch.setattr(lc, "states", {})
-    monkeypatch.setattr(lc, "queue", FakeQueue())
-
-    async def failing_edit(target, text, **kw):
-        return None
-
-    async def failing_send(target, text, **kw):
-        return None
-
-    monkeypatch.setattr(throttle, "edit_message", failing_edit)
-    monkeypatch.setattr(throttle, "send_message", failing_send)
-
-    try:
-        asyncio.run(update_all_lists())
-        assert 500 not in chat_lists
+        assert 400 not in chat_lists
     finally:
         _cleanup()
 
@@ -721,7 +715,8 @@ def test_update_all_lists_tolerates_exception(monkeypatch):
     msg = FakeMsg(50)
     chat_lists[600] = ChatDownloadList(chat_id=600, message=msg, page=0)
 
-    monkeypatch.setattr(lc, "states", {})
+    active = {"f.mp4": DownloadState("f.mp4", "/tmp/f.mp4", 100)}
+    monkeypatch.setattr(lc, "states", active)
     monkeypatch.setattr(lc, "queue", FakeQueue())
 
     async def exploding_edit(target, text, **kw):
@@ -805,6 +800,30 @@ def test_send_list_message_deletes_old_message(monkeypatch):
         asyncio.run(lc._send_list_message(FakeEvent(chat_id=800), 800))
         assert len(deleted) == 1
         assert chat_lists[800].message is new_msg
+    finally:
+        _cleanup()
+
+
+def test_send_list_message_empty_omits_buttons(monkeypatch):
+    """When list is empty, send_message is called without buttons kwarg."""
+    send_calls = []
+
+    monkeypatch.setattr(lc, "states", {})
+    monkeypatch.setattr(lc, "queue", FakeQueue())
+
+    new_msg = FakeMsg(80)
+
+    async def fake_send(event, text, **kw):
+        send_calls.append({"text": text, "kw": kw})
+        return new_msg
+
+    monkeypatch.setattr(throttle, "send_message", fake_send)
+
+    try:
+        asyncio.run(lc._send_list_message(FakeEvent(chat_id=900), 900))
+        assert len(send_calls) == 1
+        assert "No active downloads" in send_calls[0]["text"]
+        assert "buttons" not in send_calls[0]["kw"]
     finally:
         _cleanup()
 

@@ -82,7 +82,6 @@ class FakeEvent:
 
 def _setup(monkeypatch, tmp_path):
     """Monkeypatch throttle + config, register handlers, return dict by name."""
-    monkeypatch.setattr(throttle, "serialized", lambda fn: fn)
 
     async def fake_send(target, text, **kw):
         return await target.respond(text, **kw)
@@ -208,7 +207,6 @@ def test_do_delete_oserror(monkeypatch, tmp_path):
 
 def test_register_filemanager_registers_all_handlers(monkeypatch):
     """Lines 392-393: register_filemanager wires both sub-functions."""
-    monkeypatch.setattr(throttle, "serialized", lambda fn: fn)
     client = FakeClient()
     filemanager.register_filemanager(client)
     assert len(client.handlers) == 8

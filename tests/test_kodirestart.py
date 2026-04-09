@@ -76,6 +76,7 @@ def test_restart_auth_rejected(monkeypatch):
 def test_confirm_restart_success(monkeypatch):
     """Confirming restart quits Kodi and runs start command."""
     monkeypatch.setattr(config, "KODI_START_CMD", "echo ok")
+    monkeypatch.setattr(kodirestart, "_START_DELAY", 0)
 
     quit_calls = []
 
@@ -105,6 +106,7 @@ def test_confirm_restart_success(monkeypatch):
 def test_confirm_restart_failure(monkeypatch):
     """Start command failure is reported to the user."""
     monkeypatch.setattr(config, "KODI_START_CMD", "exit 1")
+    monkeypatch.setattr(kodirestart, "_START_DELAY", 0)
 
     async def fake_quit():
         pass
@@ -129,6 +131,7 @@ def test_confirm_restart_failure(monkeypatch):
 def test_confirm_restart_timeout(monkeypatch):
     """Start command timeout is reported."""
     monkeypatch.setattr(config, "KODI_START_CMD", "sleep 60")
+    monkeypatch.setattr(kodirestart, "_START_DELAY", 0)
 
     async def fake_quit():
         pass

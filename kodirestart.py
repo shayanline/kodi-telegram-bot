@@ -24,6 +24,7 @@ _SETUP_MSG = (
 
 _EXIT_POLL_INTERVAL = 1
 _EXIT_TIMEOUT = 30
+_START_DELAY = 3
 
 
 # ── Registration ──
@@ -41,7 +42,6 @@ def _register_command(client: TelegramClient) -> None:
             func=lambda e: e.is_private and not e.document and (e.raw_text or "").strip().lower() == "/restart_kodi"
         )
     )
-    @throttle.serialized
     async def _restart_cmd(event):
         sender = await event.get_sender()
         if not config.is_user_allowed(getattr(sender, "id", None), getattr(sender, "username", None)):
@@ -62,7 +62,6 @@ def _register_command(client: TelegramClient) -> None:
 
 def _register_callbacks(client: TelegramClient) -> None:
     @client.on(events.CallbackQuery(pattern=rb"kr:[yn]"))
-    @throttle.serialized
     async def _restart_cb(event):
         if event.data == b"kr:n":
             await throttle.edit_message(event, "🛑 Restart cancelled.", buttons=None)
@@ -91,7 +90,7 @@ async def _do_restart(event) -> None:
         log.error("Kodi did not exit within %ss", _EXIT_TIMEOUT)
         return
     # Let the OS fully release Kodi's process, ports and locks
-    await asyncio.sleep(_EXIT_POLL_INTERVAL)
+    await asyncio.sleep(_START_DELAY)
     try:
         proc = await asyncio.create_subprocess_shell(
             config.KODI_START_CMD,
