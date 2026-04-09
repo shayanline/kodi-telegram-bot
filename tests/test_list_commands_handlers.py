@@ -587,6 +587,31 @@ def test_update_all_download_lists_no_tracked_messages(monkeypatch):
     asyncio.run(update_all_download_lists())
 
 
+def test_update_all_download_lists_skips_when_confirming_cancel(monkeypatch):
+    """List messages are not updated while a cancel confirmation is active."""
+    from downloader.list_commands import update_all_download_lists
+
+    edited_calls = []
+    tracker = MessageTracker()
+    monkeypatch.setattr(lc, "message_tracker", tracker)
+
+    msg = FakeMsg(50)
+    tracker.register_message("__downloads_list__", msg, MessageType.DOWNLOAD_LIST, 1)
+
+    st = DownloadState("dl.mp4", "/tmp/dl.mp4", 1000)
+    st.confirming_cancel = True
+    monkeypatch.setattr(lc, "states", {"dl.mp4": st})
+
+    async def fake_edit(target, text, **kw):
+        edited_calls.append({"text": text})
+        return target
+
+    monkeypatch.setattr(throttle, "edit_message", fake_edit)
+
+    asyncio.run(update_all_download_lists())
+    assert len(edited_calls) == 0
+
+
 # ── Duplicate Cancel button fix ──
 
 

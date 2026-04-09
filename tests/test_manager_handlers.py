@@ -536,6 +536,27 @@ def test_update_tracked_messages_download_list(monkeypatch):
     message_tracker.cleanup_file("track2.mp4")
 
 
+def test_update_tracked_messages_skips_list_when_confirming_cancel(monkeypatch):
+    """Download list messages are not updated while a cancel confirmation is active."""
+    list_msg = FakeMsg(msg_id=11)
+    st = DownloadState("skip.mp4", "/tmp/skip.mp4", 100)
+    other = DownloadState("other.mp4", "/tmp/other.mp4", 100)
+    other.confirming_cancel = True
+    states["other.mp4"] = other
+
+    message_tracker.register_message("skip.mp4", list_msg, MessageType.DOWNLOAD_LIST, 1)
+
+    async def _run():
+        await _update_tracked_messages("skip.mp4", st)
+
+    try:
+        asyncio.run(_run())
+        assert list_msg.edited is None
+    finally:
+        message_tracker.cleanup_file("skip.mp4")
+        states.pop("other.mp4", None)
+
+
 # ── _ensure_disk_space (TEST_AUTO_ACCEPT path) ──
 
 

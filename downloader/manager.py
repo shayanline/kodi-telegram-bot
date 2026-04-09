@@ -121,6 +121,8 @@ async def _update_tracked_messages(filename: str, state: DownloadState):
                 if new_msg and new_msg is not tracked.message:
                     tracked.message = new_msg
             elif tracked.message_type == MessageType.DOWNLOAD_LIST:
+                if any(s.confirming_cancel for s in states.values()):
+                    continue
                 text, buttons = build_downloads_list(states)
                 new_msg = await _safe_edit(tracked.message, text, buttons=buttons)
                 if new_msg and new_msg is not tracked.message:
@@ -448,8 +450,12 @@ async def run_download(
                     except Exception:
                         pass
         # Rate-limited download-list update (direct API — _tg_lock is held)
+        # Skip when any download shows a cancel confirmation to avoid
+        # overwriting the interactive prompt on a list message.
         now = time.time()
-        if now - _list_update_ts["last"] >= _LIST_UPDATE_INTERVAL:
+        if now - _list_update_ts["last"] >= _LIST_UPDATE_INTERVAL and not any(
+            s.confirming_cancel for s in states.values()
+        ):
             _list_update_ts["last"] = now
             list_text, list_buttons = build_downloads_list(states)
             for tracked in message_tracker.get_messages("__downloads_list__", MessageType.DOWNLOAD_LIST):
