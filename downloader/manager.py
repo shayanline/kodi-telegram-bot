@@ -381,14 +381,22 @@ async def download_with_retries(
     progress_cb: Callable[[int, int], Awaitable[None]],
     msg: Any,
     state: DownloadState,
+    *,
+    source_message: Any | None = None,
 ) -> bool:
+    # Prefer the original Message so Telethon can refresh expired file
+    # references mid-download (msg_data requires input_chat + message id).
+    media: Any = source_message or document
     retry = 0
     while retry <= config.MAX_RETRY_ATTEMPTS:
         try:
             if state.cancelled:
                 raise CancelledDownload
             await wait_if_paused(state)
-            await client.download_media(document, file=path, progress_callback=progress_cb)
+            result = await client.download_media(media, file=path, progress_callback=progress_cb)
+            if result is None:
+                log.warning("download_media returned None for %s", state.filename)
+                return False
             return True
         except TimeoutError:
             retry += 1
@@ -401,6 +409,12 @@ async def download_with_retries(
         except Exception as e:
             log.warning("Download error attempt %d for %s: %s", retry, state.filename, e)
             retry += 1
+            if retry <= config.MAX_RETRY_ATTEMPTS:
+                await throttle.edit_message(
+                    msg,
+                    f"⚠️ Download error, retrying ({retry}/{config.MAX_RETRY_ATTEMPTS})...",
+                    buttons=build_buttons(state),
+                )
             await asyncio.sleep(1)
     return False
 
@@ -483,8 +497,13 @@ async def run_download(
 
     progress_cb = create_progress_callback(filename, time.time(), RateLimiter(), msg, state)
 
+    # Pass the original user message so Telethon can refresh file references
+    source_msg = getattr(event, "message", None)
+
     try:
-        success = await download_with_retries(client, document, path, progress_cb, msg, state)
+        success = await download_with_retries(
+            client, document, path, progress_cb, msg, state, source_message=source_msg
+        )
         if not await _post_download_check(success, file_size, path, state, msg, filename):
             return
         await _handle_success(msg, filename, path, state)
