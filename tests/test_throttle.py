@@ -129,3 +129,52 @@ def test_tg_call_retries_on_flood_wait(monkeypatch):
         assert attempt["n"] == 2
 
     asyncio.run(_run())
+
+
+def test_tg_call_releases_lock_during_flood_wait(monkeypatch):
+    """_tg_lock must be released during the FloodWait sleep so other calls proceed."""
+    monkeypatch.setattr(throttle, "_TG_MIN_INTERVAL", 0)
+    lock_was_free = False
+
+    real_sleep = asyncio.sleep
+
+    async def spy_sleep(seconds, *a, **k):
+        nonlocal lock_was_free
+        # During the flood-wait sleep _tg_lock should NOT be held
+        lock_was_free = not throttle._tg_lock.locked()
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", spy_sleep)
+
+    attempt = {"n": 0}
+
+    async def flaky(*a, **k):
+        attempt["n"] += 1
+        if attempt["n"] == 1:
+            raise FloodWaitError(request=None, capture=0)
+        return "ok"
+
+    async def _run():
+        await throttle._tg_call(flaky)
+        assert lock_was_free, "_tg_lock was held during FloodWait sleep"
+
+    asyncio.run(_run())
+
+
+def test_answer_callback_bypasses_tg_lock():
+    """answer_callback must not block behind _tg_lock."""
+
+    class Ev:
+        answered = False
+
+        async def answer(self, text=None, **kw):
+            self.answered = True
+
+    async def _run():
+        # Hold the lock — answer_callback should still work
+        async with throttle._tg_lock:
+            ev = Ev()
+            await throttle.answer_callback(ev, "ok")
+            assert ev.answered
+
+    asyncio.run(_run())

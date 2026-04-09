@@ -49,7 +49,11 @@ _last_call = 0.0
 
 
 async def _tg_call(fn, *args, **kwargs) -> Any:
-    """Execute a Telegram API call with rate limiting and FloodWait retry."""
+    """Execute a Telegram API call with rate limiting and FloodWait retry.
+
+    Releases ``_tg_lock`` during FloodWait sleeps so other API calls can
+    proceed instead of being blocked for the entire penalty duration.
+    """
     global _last_call
     async with _tg_lock:
         wait = _TG_MIN_INTERVAL - (time.monotonic() - _last_call)
@@ -58,8 +62,19 @@ async def _tg_call(fn, *args, **kwargs) -> Any:
         try:
             return await fn(*args, **kwargs)
         except FloodWaitError as e:
-            log.warning("Telegram FloodWait: sleeping %ds", e.seconds)
-            await asyncio.sleep(e.seconds)
+            flood_seconds = e.seconds
+        finally:
+            _last_call = time.monotonic()
+
+    # Lock released — other API calls can proceed during the wait
+    log.warning("Telegram FloodWait: sleeping %ds", flood_seconds)
+    await asyncio.sleep(flood_seconds)
+
+    async with _tg_lock:
+        wait = _TG_MIN_INTERVAL - (time.monotonic() - _last_call)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        try:
             return await fn(*args, **kwargs)
         finally:
             _last_call = time.monotonic()
@@ -90,9 +105,14 @@ async def send_message(target, text: str, **kwargs) -> Any:
 
 
 async def answer_callback(event, text: str | None = None, **kwargs) -> None:
-    """Rate-limited callback query answer (best-effort)."""
+    """Best-effort callback query answer — bypasses rate-limit lock.
+
+    Callback query IDs expire quickly (~30 s), so waiting behind a
+    FloodWait sleep or the API lock would guarantee failure.  Call the
+    Telegram API directly and suppress all errors.
+    """
     with contextlib.suppress(Exception):
-        await _tg_call(event.answer, text, **kwargs)
+        await event.answer(text, **kwargs)
 
 
 __all__ = [
