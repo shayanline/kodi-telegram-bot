@@ -11,7 +11,6 @@ import kodi
 import utils
 from downloader.manager import (
     _current_reserved_bytes,
-    _fan_out_mirrors,
     _final_cleanup,
     _handle_error,
     _handle_success,
@@ -22,12 +21,10 @@ from downloader.manager import (
     _projected_free_mb,
     _safe_edit,
     _select_deletion_candidate,
-    _send_start_message,
-    _update_tracked_messages,
     filename_for_document,
     pre_checks,
 )
-from downloader.state import DownloadState, MessageType, file_id_map, message_tracker, states
+from downloader.state import DownloadState, file_id_map, states
 
 # ── Fakes ──
 
@@ -91,7 +88,7 @@ def test_safe_edit_success():
     assert result is msg
 
 
-def test_safe_edit_fallback_on_failure(monkeypatch):
+def test_safe_edit_fallback_on_failure():
     class FailMsg:
         id = 1
 
@@ -102,14 +99,12 @@ def test_safe_edit_fallback_on_failure(monkeypatch):
             return FakeMsg(99)
 
     msg = FailMsg()
-    st = DownloadState("x.mp4", "/tmp/x.mp4", 100)
 
     async def _run():
-        return await _safe_edit(msg, "hello", state=st)
+        return await _safe_edit(msg, "hello")
 
     result = asyncio.run(_run())
     assert result is not None
-    assert st.message is not None
 
 
 # ── filename_for_document ──
@@ -338,26 +333,6 @@ def test_init_state_existing():
         file_id_map.clear()
 
 
-# ── _send_start_message ──
-
-
-def test_send_start_message(monkeypatch):
-    async def fake_notify(t, m):
-        pass
-
-    monkeypatch.setattr(kodi, "notify", fake_notify)
-
-    ev = FakeEvent()
-    st = DownloadState("test.mp4", "/tmp/test.mp4", 1000)
-
-    async def _run():
-        return await _send_start_message(ev, st)
-
-    asyncio.run(_run())
-    assert st.message is not None
-    message_tracker.cleanup_file("test.mp4")
-
-
 # ── _post_download_check ──
 
 
@@ -365,8 +340,8 @@ def test_post_download_check_success(tmp_path):
     f = tmp_path / "ok.bin"
     f.write_bytes(b"x" * 1000)
     st = DownloadState("ok.bin", str(f), 1000)
-    msg = FakeMsg()
-    result = asyncio.run(_post_download_check(True, 1000, str(f), st, msg, "ok.bin"))
+    ev = FakeEvent()
+    result = asyncio.run(_post_download_check(True, 1000, str(f), st, "ok.bin", ev))
     assert result is True
 
 
@@ -376,8 +351,8 @@ def test_post_download_check_cancelled(monkeypatch, tmp_path):
     f.write_bytes(b"x" * 50)
     st = DownloadState("cancel.bin", str(f), 1000)
     st.mark_cancelled()
-    msg = FakeMsg()
-    result = asyncio.run(_post_download_check(False, 1000, str(f), st, msg, "cancel.bin"))
+    ev = FakeEvent()
+    result = asyncio.run(_post_download_check(False, 1000, str(f), st, "cancel.bin", ev))
     assert result is False
     assert not f.exists()
 
@@ -393,10 +368,10 @@ def test_post_download_check_incomplete(monkeypatch, tmp_path):
     f = tmp_path / "inc.bin"
     f.write_bytes(b"x" * 50)
     st = DownloadState("inc.bin", str(f), 1000)
-    msg = FakeMsg()
-    result = asyncio.run(_post_download_check(False, 1000, str(f), st, msg, "inc.bin"))
+    ev = FakeEvent()
+    result = asyncio.run(_post_download_check(False, 1000, str(f), st, "inc.bin", ev))
     assert result is False
-    assert msg.edited is not None and "incomplete" in msg.edited.lower()
+    assert ev._responded is not None and "incomplete" in ev._responded.lower()
 
 
 # ── _handle_success ──
@@ -416,13 +391,13 @@ def test_handle_success_not_playing(monkeypatch, tmp_path):
     monkeypatch.setattr(kodi, "play", fake_play)
     monkeypatch.setattr(kodi, "notify", fake_notify)
 
-    msg = FakeMsg()
     st = DownloadState("done.mp4", str(tmp_path / "done.mp4"), 100)
     states["done.mp4"] = st
+    ev = FakeEvent()
 
-    asyncio.run(_handle_success(msg, "done.mp4", str(tmp_path / "done.mp4"), st))
+    asyncio.run(_handle_success("done.mp4", str(tmp_path / "done.mp4"), st, ev))
     assert st.completed
-    assert msg.edited is not None and "complete" in msg.edited.lower()
+    assert ev._responded is not None and "complete" in ev._responded.lower()
     states.pop("done.mp4", None)
 
 
@@ -442,11 +417,11 @@ def test_handle_success_playing(monkeypatch, tmp_path):
     monkeypatch.setattr(kodi, "play", fake_play)
     monkeypatch.setattr(kodi, "notify", fake_notify)
 
-    msg = FakeMsg()
     st = DownloadState("done2.mp4", str(tmp_path / "done2.mp4"), 100)
     states["done2.mp4"] = st
+    ev = FakeEvent()
 
-    asyncio.run(_handle_success(msg, "done2.mp4", str(tmp_path / "done2.mp4"), st))
+    asyncio.run(_handle_success("done2.mp4", str(tmp_path / "done2.mp4"), st, ev))
     assert len(played) == 0  # should not play when already playing
     states.pop("done2.mp4", None)
 
@@ -466,10 +441,10 @@ def test_handle_error_cancelled(monkeypatch, tmp_path):
     f.write_bytes(b"x" * 10)
     st = DownloadState("err.bin", str(f), 100)
     st.mark_cancelled()
-    msg = FakeMsg()
     states["err.bin"] = st
+    ev = FakeEvent()
 
-    asyncio.run(_handle_error(RuntimeError("boom"), st, msg, "err.bin", str(f)))
+    asyncio.run(_handle_error(RuntimeError("boom"), st, "err.bin", str(f), ev))
     assert not f.exists()
     states.pop("err.bin", None)
 
@@ -481,10 +456,10 @@ def test_handle_error_not_cancelled(monkeypatch, tmp_path):
     monkeypatch.setattr(kodi, "notify", fake_notify)
 
     st = DownloadState("err2.bin", str(tmp_path / "err2.bin"), 100)
-    msg = FakeMsg()
+    ev = FakeEvent()
 
-    asyncio.run(_handle_error(RuntimeError("oops"), st, msg, "err2.bin", str(tmp_path / "err2.bin")))
-    assert msg.edited is not None and "oops" in msg.edited
+    asyncio.run(_handle_error(RuntimeError("oops"), st, "err2.bin", str(tmp_path / "err2.bin"), ev))
+    assert ev._responded is not None and "oops" in ev._responded
 
 
 # ── _final_cleanup ──
@@ -501,135 +476,6 @@ def test_final_cleanup():
     _final_cleanup("clean.mp4")
     assert "clean.mp4" not in states
     assert fid not in file_id_map
-
-
-# ── _update_tracked_messages ──
-
-
-def test_update_tracked_messages_progress(monkeypatch):
-    primary = FakeMsg(msg_id=1)
-    mirror = FakeMsg(msg_id=2)
-    st = DownloadState("track.mp4", "/tmp/track.mp4", 100)
-    st.message = primary
-
-    message_tracker.register_message("track.mp4", mirror, MessageType.PROGRESS)
-
-    async def _run():
-        await _update_tracked_messages("track.mp4", st)
-
-    asyncio.run(_run())
-    assert mirror.edited is not None
-    message_tracker.cleanup_file("track.mp4")
-
-
-def test_update_tracked_messages_download_list(monkeypatch):
-    list_msg = FakeMsg(msg_id=10)
-    st = DownloadState("track2.mp4", "/tmp/track2.mp4", 100)
-
-    message_tracker.register_message("track2.mp4", list_msg, MessageType.DOWNLOAD_LIST)
-
-    async def _run():
-        await _update_tracked_messages("track2.mp4", st)
-
-    asyncio.run(_run())
-    assert list_msg.edited is not None
-    message_tracker.cleanup_file("track2.mp4")
-
-
-def test_update_tracked_messages_skips_frozen_list_message(monkeypatch):
-    """Download list messages whose ID is in frozen_list_msg_ids are skipped."""
-    from downloader.state import frozen_list_msg_ids
-
-    list_msg = FakeMsg(msg_id=11)
-    st = DownloadState("skip.mp4", "/tmp/skip.mp4", 100)
-
-    message_tracker.register_message("skip.mp4", list_msg, MessageType.DOWNLOAD_LIST)
-    frozen_list_msg_ids.add(11)
-
-    async def _run():
-        await _update_tracked_messages("skip.mp4", st)
-
-    try:
-        asyncio.run(_run())
-        assert list_msg.edited is None
-    finally:
-        message_tracker.cleanup_file("skip.mp4")
-        frozen_list_msg_ids.discard(11)
-
-
-def test_update_tracked_messages_updates_non_frozen_list_message(monkeypatch):
-    """Non-frozen download list messages are still updated."""
-    from downloader.state import frozen_list_msg_ids
-
-    list_msg = FakeMsg(msg_id=12)
-    st = DownloadState("ok.mp4", "/tmp/ok.mp4", 100)
-
-    message_tracker.register_message("ok.mp4", list_msg, MessageType.DOWNLOAD_LIST)
-    # Freeze a different message
-    frozen_list_msg_ids.add(99)
-
-    async def _run():
-        await _update_tracked_messages("ok.mp4", st)
-
-    try:
-        asyncio.run(_run())
-        assert list_msg.edited is not None
-    finally:
-        message_tracker.cleanup_file("ok.mp4")
-        frozen_list_msg_ids.discard(99)
-
-
-# ── _fan_out_mirrors ──
-
-
-def test_fan_out_mirrors_edits_non_primary_mirrors():
-    """_fan_out_mirrors edits mirror messages but skips the primary."""
-    primary = FakeMsg(msg_id=1)
-    mirror = FakeMsg(msg_id=2)
-    st = DownloadState("fan.mp4", "/tmp/fan.mp4", 100)
-    st.message = primary
-
-    message_tracker.register_message("fan.mp4", primary, MessageType.PROGRESS)
-    message_tracker.register_message("fan.mp4", mirror, MessageType.PROGRESS)
-
-    async def _run():
-        await _fan_out_mirrors(st, "progress text", {})
-
-    asyncio.run(_run())
-    assert primary.edited is None
-    assert mirror.edited == "progress text"
-    message_tracker.cleanup_file("fan.mp4")
-
-
-def test_fan_out_mirrors_fallback_on_failure():
-    """_fan_out_mirrors replaces a broken mirror via respond."""
-    primary = FakeMsg(msg_id=1)
-
-    class FailMirror:
-        id = 2
-        responded = None
-
-        async def edit(self, text, **kw):
-            raise RuntimeError("gone")
-
-        async def respond(self, text, **kw):
-            self.responded = text
-            return FakeMsg(msg_id=200)
-
-    mirror = FailMirror()
-    st = DownloadState("fall.mp4", "/tmp/fall.mp4", 100)
-    st.message = primary
-
-    message_tracker.register_message("fall.mp4", mirror, MessageType.PROGRESS)
-    tracked = message_tracker.get_messages("fall.mp4", MessageType.PROGRESS)[0]
-
-    async def _run():
-        await _fan_out_mirrors(st, "update", {})
-
-    asyncio.run(_run())
-    assert mirror.responded == "update"
-    assert tracked.message.id == 200
-    message_tracker.cleanup_file("fall.mp4")
 
 
 # ── _ensure_disk_space (TEST_AUTO_ACCEPT path) ──
@@ -688,8 +534,8 @@ def test_ensure_disk_space_no_double_count_with_preregistered_state(monkeypatch,
     """Pre-registered state must not double-count file size in projected free calculation."""
     monkeypatch.setattr(config, "DOWNLOAD_DIR", str(tmp_path))
     monkeypatch.setattr(config, "MIN_FREE_DISK_MB", 200)
-    # 800 MB free, 500 MB file → projected should be 300 MB (>= 200), no deletion needed.
-    # Without the fix, projected would be 800 - (500+500) = -200 → wrongly triggers autoremove.
+    # 800 MB free, 500 MB file -> projected should be 300 MB (>= 200), no deletion needed.
+    # Without the fix, projected would be 800 - (500+500) = -200 -> wrongly triggers autoremove.
     monkeypatch.setattr(utils, "free_disk_mb", lambda _: 800)
     monkeypatch.setattr(config, "ORGANIZE_MEDIA", False)
 
@@ -759,41 +605,6 @@ def test_register_handlers_does_not_crash(monkeypatch):
     assert len(client.handlers) > 0
     # Reset
     monkeypatch.setattr(manager, "_queue_started", False)
-    client.loop.close()
-
-
-# ── _status handler ──
-
-
-def test_status_handler(monkeypatch):
-    from downloader import manager
-
-    monkeypatch.setattr(config, "is_user_allowed", lambda uid, uname: True)
-    monkeypatch.setattr(config, "MAX_CONCURRENT_DOWNLOADS", 2)
-
-    client = FakeClient()
-    manager._register_status_handler(client)
-    handler = client.handlers[0]
-
-    ev = FakeEvent()
-
-    asyncio.run(handler(ev))
-    assert ev._responded is not None and "Active" in ev._responded
-    client.loop.close()
-
-
-def test_status_handler_unauthorized(monkeypatch):
-    from downloader import manager
-
-    monkeypatch.setattr(config, "is_user_allowed", lambda uid, uname: False)
-
-    client = FakeClient()
-    manager._register_status_handler(client)
-    handler = client.handlers[0]
-
-    ev = FakeEvent()
-    asyncio.run(handler(ev))
-    assert ev._responded is not None and "Not authorized" in ev._responded
     client.loop.close()
 
 
@@ -989,164 +800,6 @@ def test_ensure_disk_space_existing_message_not_touched_when_enough(monkeypatch,
     ok, _msg = asyncio.run(_run())
     assert ok is True
     assert existing.edited is None
-
-
-# ── Queue cancel fallthrough to active cancel ──
-
-
-def test_qcancel_falls_through_to_active():
-    """Queue cancel falls through to active cancel when item has started."""
-    from downloader import manager
-    from downloader.state import register_file_id
-
-    filename = "started.mp4"
-    file_id = register_file_id(filename)
-    st = DownloadState(filename, "/tmp/started.mp4", 1000)
-    states[filename] = st
-
-    client = FakeClient()
-    manager._register_qcancel(client)
-    handler = client.handlers[0]
-
-    async def _run():
-        ev = FakeCallbackEvent(f"qcancel:{file_id}".encode())
-        await handler(ev)
-        return ev
-
-    try:
-        ev = asyncio.run(_run())
-        assert st.confirming_cancel is True
-        assert ev._edited_text is not None
-        assert "Cancel this download" in ev._edited_text
-    finally:
-        states.pop(filename, None)
-        file_id_map.pop(file_id, None)
-        st.confirming_cancel = False
-        client.loop.close()
-
-
-def test_qcancel_confirm_falls_through_to_active():
-    """Queue cancel confirm cancels the active download when item has started."""
-    from downloader import manager
-    from downloader.state import register_file_id
-
-    filename = "started2.mp4"
-    file_id = register_file_id(filename)
-    st = DownloadState(filename, "/tmp/started2.mp4", 1000)
-    states[filename] = st
-
-    client = FakeClient()
-    manager._register_qcancel_confirm(client)
-    handler = client.handlers[0]
-
-    async def _run():
-        ev = FakeCallbackEvent(f"qcy:{file_id}".encode())
-        await handler(ev)
-        return ev
-
-    try:
-        ev = asyncio.run(_run())
-        assert st.cancelled is True
-        assert ev._answered == "Cancelling"
-    finally:
-        states.pop(filename, None)
-        file_id_map.pop(file_id, None)
-        client.loop.close()
-
-
-def test_qcancel_decline_shows_active_state():
-    """Declining queue cancel shows active download progress when item has started."""
-    from downloader import manager
-    from downloader.state import register_file_id
-
-    filename = "started3.mp4"
-    file_id = register_file_id(filename)
-    st = DownloadState(filename, "/tmp/started3.mp4", 1000)
-    st.update_progress(500, 50, "1 MB/s")
-    states[filename] = st
-
-    client = FakeClient()
-    manager._register_qcancel_confirm(client)
-    handler = client.handlers[0]
-
-    async def _run():
-        ev = FakeCallbackEvent(f"qcn:{file_id}".encode())
-        await handler(ev)
-        return ev
-
-    try:
-        ev = asyncio.run(_run())
-        assert st.cancelled is False
-        assert ev._edited_text is not None
-        assert "Downloading" in ev._edited_text
-    finally:
-        states.pop(filename, None)
-        file_id_map.pop(file_id, None)
-        client.loop.close()
-
-
-# ── frozen_list_msg_ids for cancel from list ──
-
-
-def test_lcancel_freezes_message_id():
-    """lcancel from download list adds the message ID to frozen_list_msg_ids."""
-    from downloader import manager
-    from downloader.state import frozen_list_msg_ids, register_file_id
-
-    filename = "freeze.mp4"
-    file_id = register_file_id(filename)
-    st = DownloadState(filename, "/tmp/freeze.mp4", 1000)
-    states[filename] = st
-
-    client = FakeClient()
-    manager._register_pause_resume_cancel(client)
-    handler = client.handlers[0]
-
-    async def _run():
-        ev = FakeCallbackEvent(f"lcancel:{file_id}".encode(), msg_id=42)
-        await handler(ev)
-        return ev
-
-    try:
-        asyncio.run(_run())
-        assert 42 in frozen_list_msg_ids
-    finally:
-        states.pop(filename, None)
-        file_id_map.pop(file_id, None)
-        frozen_list_msg_ids.discard(42)
-        st.confirming_cancel = False
-        client.loop.close()
-
-
-def test_cancel_confirm_unfreezes_message_id():
-    """Cancel confirm (from list) removes the message ID from frozen_list_msg_ids."""
-    from downloader import manager
-    from downloader.state import frozen_list_msg_ids, register_file_id
-
-    filename = "unfreeze.mp4"
-    file_id = register_file_id(filename)
-    st = DownloadState(filename, "/tmp/unfreeze.mp4", 1000)
-    st.confirming_cancel = True
-    states[filename] = st
-    frozen_list_msg_ids.add(42)
-
-    client = FakeClient()
-    manager._register_cancel_confirm(client)
-    handler = client.handlers[0]
-
-    async def _run():
-        ev = FakeCallbackEvent(f"cnl:{file_id}".encode(), msg_id=42)
-        await handler(ev)
-        return ev
-
-    try:
-        asyncio.run(_run())
-        assert 42 not in frozen_list_msg_ids
-    finally:
-        states.pop(filename, None)
-        file_id_map.pop(file_id, None)
-        frozen_list_msg_ids.discard(42)
-        client.loop.close()
 
 
 # ── find_pending_deletion ──

@@ -9,15 +9,6 @@ class DummyEvent:
         return None
 
 
-class DummyMsg:
-    def __init__(self):
-        self.edits = []
-
-    async def edit(self, text, buttons=None):  # pragma: no cover - trivial
-        self.edits.append(text)
-        await asyncio.sleep(0)
-
-
 async def _runner(client, qi):  # pragma: no cover - tiny helper
     await asyncio.sleep(0.01)  # keep task alive briefly
 
@@ -29,33 +20,34 @@ async def _prepare_queue(n, limit):
     q.ensure_worker(loop, None)
     ev = DummyEvent()
     for i in range(n):
-        qi = QueuedItem(f"f{i}.bin", object(), 1, f"/tmp/f{i}.bin", ev)
-        qi.message = DummyMsg()
-        qi.file_id = f"id{i}"
+        qi = QueuedItem(f"f{i}.bin", object(), 1, f"/tmp/f{i}.bin", ev, file_id=f"id{i}")
         await q.enqueue(qi)
     return q
 
 
-async def _test_renumber():
-    q = await _prepare_queue(4, limit=2)
-    # Allow some tasks to start so renumbering is triggered
-    await asyncio.sleep(0.05)
-    # Collect all edits from remaining queued items
-    edits = []
-    for qi in q.items.values():
-        edits.extend(qi.message.edits)
-    await q.stop()
-    return edits
+def test_queue_enqueue_and_cancel():
+    """Items can be enqueued and cancelled before processing."""
+
+    async def _inner():
+        q = DownloadQueue(limit=1)
+        ev = DummyEvent()
+        qi1 = QueuedItem("a.bin", object(), 1, "/tmp/a.bin", ev)
+        qi2 = QueuedItem("b.bin", object(), 1, "/tmp/b.bin", ev)
+        pos1 = await q.enqueue(qi1)
+        pos2 = await q.enqueue(qi2)
+        assert pos1 == 1
+        assert pos2 == 2
+        assert q.cancel("b.bin") is True
+        assert "b.bin" not in q.items
+        assert q.cancel("b.bin") is False  # already cancelled
+        await q.stop()
+
+    asyncio.run(_inner())
 
 
-def test_queue_renumber_and_concurrency():
-    edits = asyncio.run(_test_renumber())
-    # After items start processing, remaining queued items should be renumbered
-    for text in edits:
-        assert "Queued #" in text
+def test_queue_concurrency():
+    """Queue processes items concurrently up to the limit."""
 
-    # Basic concurrency smoke: ensure queue processes more than one item without serial bottleneck
-    # by enqueuing several small tasks and confirming total duration < artificial serial time.
     async def _timed():
         start = asyncio.get_event_loop().time()
         q = await _prepare_queue(4, limit=2)
@@ -64,5 +56,20 @@ def test_queue_renumber_and_concurrency():
         return asyncio.get_event_loop().time() - start
 
     elapsed = asyncio.run(_timed())
-    # If serial (4 * 0.01 per task plus overhead) ~0.04; with concurrency similarly small but we allow slack
+    # With concurrency, 4 items at 0.01s each with limit=2 should be fast
     assert elapsed < 1.0
+
+
+def test_cleanup_remaining():
+    """_cleanup_remaining cancels all items and clears the dict."""
+
+    async def _inner():
+        q = DownloadQueue(limit=1)
+        ev = DummyEvent()
+        qi = QueuedItem("rem.bin", object(), 1, "/tmp/rem.bin", ev)
+        await q.enqueue(qi)
+        q._cleanup_remaining()
+        assert len(q.items) == 0
+        assert qi.cancelled
+
+    asyncio.run(_inner())

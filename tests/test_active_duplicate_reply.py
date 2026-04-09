@@ -1,12 +1,6 @@
 import asyncio
 
 from downloader.manager import _handle_active_duplicate
-from downloader.state import DownloadState
-
-
-class MockSender:
-    def __init__(self, sender_id):
-        self.id = sender_id
 
 
 class Msg:
@@ -25,22 +19,10 @@ class Ev:
         await asyncio.sleep(0)
         return Msg()
 
-    async def get_sender(self):  # pragma: no cover - test stub
-        await asyncio.sleep(0)
-        return MockSender(self.sender_id)
-
-
-class ActiveEvent(Ev):
-    pass
-
 
 async def _run():
-    active_orig = ActiveEvent(10, sender_id=42)
-    st = DownloadState("abc.bin", "/tmp/abc.bin", 100)
-    st.message = Msg()
-    st.original_event = active_orig
-    dup_event = Ev(99, sender_id=42)  # same user
-    await _handle_active_duplicate(dup_event, st, st.filename)
+    dup_event = Ev(99, sender_id=42)
+    await _handle_active_duplicate(dup_event, "abc.bin")
     return dup_event.replies
 
 
@@ -48,6 +30,6 @@ def test_active_duplicate_replies_to_new_message():
     replies = asyncio.run(_run())
     assert replies, "No reply captured"
     text, reply_to = replies[0]
-    assert "Already in progress" in text
-    # New behavior: reply is threaded to existing progress message (id 111)
-    assert reply_to == 111
+    assert "Already downloading" in text
+    # Reply is threaded to the new event's message id
+    assert reply_to == 99

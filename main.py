@@ -9,7 +9,7 @@ from telethon import TelegramClient
 
 import config
 import kodi
-import throttle
+from downloader.list_commands import update_all_lists
 from downloader.manager import register_handlers, validate_size
 from downloader.queue import queue
 from downloader.state import states
@@ -29,9 +29,7 @@ async def _register_bot_commands(client: TelegramClient) -> None:
         return
     commands = [
         BotCommand("start", "Help / usage"),
-        BotCommand("status", "Show downloads summary"),
-        BotCommand("downloads", "Show active downloads"),
-        BotCommand("queue", "Show queued downloads"),
+        BotCommand("downloads", "Show downloads & queue"),
         BotCommand("files", "Browse and manage files"),
         BotCommand("kodi", "Kodi remote control"),
         BotCommand("restart_kodi", "Quit and restart Kodi"),
@@ -90,13 +88,11 @@ async def _graceful_shutdown(client, shutdown_event: asyncio.Event):
         return
     log.info("Shutting down gracefully...")
     shutdown_event.set()
-    # Snapshot to avoid mutation during iteration
     snapshot = tuple(states.values())
     for st in snapshot:
         st.mark_cancelled()
-        if st.message:
-            # Remove buttons when signalling shutdown cancellation
-            await throttle.edit_message(st.message, f"🛑 Cancelling (shutdown): {st.filename}", buttons=None)
+    with contextlib.suppress(Exception):
+        await update_all_lists()
     with contextlib.suppress(Exception):
         await asyncio.wait_for(queue.stop(), timeout=6)
     removed = _cleanup_partials(snapshot)

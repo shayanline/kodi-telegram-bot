@@ -1,10 +1,10 @@
-"""Tests for the message tracking system."""
+"""Tests for download state and per-chat download list tracking."""
 
 from unittest.mock import AsyncMock
 
 import pytest
 
-from downloader.state import DownloadState, MessageTracker, MessageType, TrackedMessage
+from downloader.state import ChatDownloadList, DownloadState, chat_lists
 
 
 class MockMessage:
@@ -17,164 +17,197 @@ class MockMessage:
         self.raw_text = "Mock message"
 
 
-def test_message_tracker_basic_operations():
-    """Test basic message tracker operations."""
-    tracker = MessageTracker()
-    msg = MockMessage(1)
-
-    # Register a message
-    tracker.register_message("test_file.mp4", msg, MessageType.PROGRESS)
-
-    # Check it's registered
-    messages = tracker.get_messages("test_file.mp4")
-    assert len(messages) == 1
-    assert messages[0].message_type == MessageType.PROGRESS
-
-    # Check filtered retrieval
-    progress_msgs = tracker.get_messages("test_file.mp4", MessageType.PROGRESS)
-    assert len(progress_msgs) == 1
-
-    queue_msgs = tracker.get_messages("test_file.mp4", MessageType.QUEUE_LIST)
-    assert len(queue_msgs) == 0
-
-    # Cleanup
-    tracker.cleanup_file("test_file.mp4")
-    assert len(tracker.get_messages("test_file.mp4")) == 0
+# ── DownloadState tests ──
 
 
-def test_message_tracker_multiple_messages():
-    """Test tracking multiple messages for one file."""
-    tracker = MessageTracker()
-
-    progress_msg = MockMessage(1)
-    list_msg = MockMessage(2)
-
-    tracker.register_message("test_file.mp4", progress_msg, MessageType.PROGRESS)
-    tracker.register_message("test_file.mp4", list_msg, MessageType.DOWNLOAD_LIST)
-
-    all_messages = tracker.get_messages("test_file.mp4")
-    assert len(all_messages) == 2
-
-    progress_messages = tracker.get_messages("test_file.mp4", MessageType.PROGRESS)
-    assert len(progress_messages) == 1
-
-    list_messages = tracker.get_all_list_messages()
-    assert len(list_messages) == 1
-    assert list_messages[0].message_type == MessageType.DOWNLOAD_LIST
-
-
-def test_download_state_progress_tracking():
-    """Test DownloadState progress tracking features."""
+def test_download_state_creation_defaults():
+    """Test DownloadState is created with correct defaults."""
     state = DownloadState("test_file.mp4", "/tmp/test_file.mp4", 1000)
 
-    # Test initial values
-    assert state.downloaded_bytes == 0
-    assert state.progress_percent == 0
-    assert state.speed == "0 B/s"
-    assert state.get_progress_text() == ""
-
-    # Test progress update
-    state.update_progress(500, 50, "1 MB/s")
-    assert state.downloaded_bytes == 500
-    assert state.progress_percent == 50
-    assert state.speed == "1 MB/s"
-
-    # Test progress text
-    progress_text = state.get_progress_text()
-    assert "50%" in progress_text
-    assert "500 B" in progress_text or "500.0 B" in progress_text
-    assert "1 MB/s" in progress_text
-
-    # Test paused state
-    state.mark_paused()
-    paused_text = state.get_progress_text()
-    assert "⏸️ Paused" in paused_text
-    assert "50%" in paused_text
-
-
-def test_message_tracker_cleanup():
-    """Test message tracker cleanup functionality."""
-    tracker = MessageTracker()
-
-    msg1 = MockMessage(1)
-    msg2 = MockMessage(2)
-
-    tracker.register_message("test_file.mp4", msg1, MessageType.PROGRESS)
-    tracker.register_message("test_file.mp4", msg2, MessageType.DOWNLOAD_LIST)
-
-    assert len(tracker.get_messages("test_file.mp4")) == 2
-
-    tracker.cleanup_file("test_file.mp4")
-
-    assert len(tracker.get_messages("test_file.mp4")) == 0
-
-
-def test_message_tracker_filtering():
-    """Test message tracker filtering by type."""
-    tracker = MessageTracker()
-
-    # Register different types of messages
-    msg1 = MockMessage(1)
-    msg2 = MockMessage(2)
-    msg3 = MockMessage(3)
-
-    tracker.register_message("test_file.mp4", msg1, MessageType.PROGRESS)
-    tracker.register_message("test_file.mp4", msg2, MessageType.DOWNLOAD_LIST)
-    tracker.register_message("other_file.mp4", msg3, MessageType.QUEUE_LIST)
-
-    # Test filtering by type
-    progress_msgs = tracker.get_messages("test_file.mp4", MessageType.PROGRESS)
-    assert len(progress_msgs) == 1
-    assert progress_msgs[0].message.id == 1
-
-    download_list_msgs = tracker.get_messages("test_file.mp4", MessageType.DOWNLOAD_LIST)
-    assert len(download_list_msgs) == 1
-    assert download_list_msgs[0].message.id == 2
-
-    # Test get all list messages
-    all_lists = tracker.get_all_list_messages()
-    assert len(all_lists) == 2
-    list_types = {msg.message_type for msg in all_lists}
-    assert MessageType.DOWNLOAD_LIST in list_types
-    assert MessageType.QUEUE_LIST in list_types
-
-
-def test_tracked_message_basic_functionality():
-    """Test TrackedMessage basic functionality."""
-    msg = MockMessage(1)
-    tracked = TrackedMessage(msg, MessageType.PROGRESS)
-
-    assert tracked.message == msg
-    assert tracked.message_type == MessageType.PROGRESS
-
-
-def test_download_state_basic_functionality():
-    """Test DownloadState basic functionality."""
-    state = DownloadState("test_file.mp4", "/tmp/test_file.mp4", 1000)
-
-    # Test initial state
-    assert not state.paused
-    assert not state.cancelled
-    assert not state.completed
     assert state.filename == "test_file.mp4"
     assert state.path == "/tmp/test_file.mp4"
     assert state.size == 1000
+    assert state.original_event is None
+    assert not state.paused
+    assert not state.cancelled
+    assert not state.completed
+    assert not state.waiting_for_space
+    assert state.downloaded_bytes == 0
+    assert state.progress_percent == 0
+    assert state.speed == "0 B/s"
 
-    # Test pause
+
+def test_download_state_update_progress():
+    """Test DownloadState.update_progress sets fields correctly."""
+    state = DownloadState("file.mp4", "/tmp/file.mp4", 2000)
+
+    state.update_progress(500, 25, "1 MB/s")
+    assert state.downloaded_bytes == 500
+    assert state.progress_percent == 25
+    assert state.speed == "1 MB/s"
+
+    # Update again with new values
+    state.update_progress(1500, 75, "2.5 MB/s")
+    assert state.downloaded_bytes == 1500
+    assert state.progress_percent == 75
+    assert state.speed == "2.5 MB/s"
+
+
+def test_download_state_mark_paused_and_resumed():
+    """Test pausing and resuming a download."""
+    state = DownloadState("file.mp4", "/tmp/file.mp4", 1000)
+
+    assert not state.paused
+
     state.mark_paused()
     assert state.paused
-    assert not state.cancelled
 
-    # Test resume
     state.mark_resumed()
     assert not state.paused
 
-    # Test cancel
+
+def test_download_state_mark_cancelled():
+    """Test cancelling a download."""
+    state = DownloadState("file.mp4", "/tmp/file.mp4", 1000)
+
     state.mark_cancelled()
     assert state.cancelled
-    # Should not be able to pause when cancelled
+
+
+def test_download_state_mark_completed():
+    """Test completing a download clears paused flag."""
+    state = DownloadState("file.mp4", "/tmp/file.mp4", 1000)
+
     state.mark_paused()
-    assert not state.paused  # Should remain False since cancelled
+    assert state.paused
+
+    state.mark_completed()
+    assert state.completed
+    assert not state.paused
+
+
+def test_download_state_cancelled_blocks_pause():
+    """Pausing should be ignored once the download is cancelled."""
+    state = DownloadState("file.mp4", "/tmp/file.mp4", 1000)
+
+    state.mark_cancelled()
+    assert state.cancelled
+
+    state.mark_paused()
+    assert not state.paused  # pause must not take effect
+
+
+def test_download_state_cancelled_blocks_resume():
+    """Resuming should be ignored once the download is cancelled."""
+    state = DownloadState("file.mp4", "/tmp/file.mp4", 1000)
+
+    state.mark_paused()
+    state.mark_cancelled()
+
+    state.mark_resumed()
+    assert state.paused  # resume must not take effect
+
+
+def test_download_state_cancelled_blocks_completed():
+    """Completing should be ignored once the download is cancelled."""
+    state = DownloadState("file.mp4", "/tmp/file.mp4", 1000)
+
+    state.mark_cancelled()
+
+    state.mark_completed()
+    assert not state.completed  # complete must not take effect
+
+
+# ── ChatDownloadList tests ──
+
+
+def test_chat_download_list_defaults():
+    """Test ChatDownloadList is created with correct defaults."""
+    cdl = ChatDownloadList(chat_id=12345)
+
+    assert cdl.chat_id == 12345
+    assert cdl.message is None
+    assert cdl.page == 0
+    assert cdl.confirming is None
+
+
+def test_chat_download_list_custom_values():
+    """Test ChatDownloadList with explicit field values."""
+    msg = MockMessage(42)
+    cdl = ChatDownloadList(chat_id=99, message=msg, page=3, confirming="abc123")
+
+    assert cdl.chat_id == 99
+    assert cdl.message is msg
+    assert cdl.message.id == 42
+    assert cdl.page == 3
+    assert cdl.confirming == "abc123"
+
+
+# ── chat_lists global dict tests ──
+
+
+def test_chat_lists_add_and_get():
+    """Test adding to and reading from the global chat_lists dict."""
+    try:
+        cdl = ChatDownloadList(chat_id=111)
+        chat_lists[111] = cdl
+
+        assert 111 in chat_lists
+        assert chat_lists[111] is cdl
+        assert chat_lists[111].chat_id == 111
+    finally:
+        chat_lists.pop(111, None)
+
+
+def test_chat_lists_remove():
+    """Test removing an entry from the global chat_lists dict."""
+    try:
+        chat_lists[222] = ChatDownloadList(chat_id=222)
+        assert 222 in chat_lists
+
+        del chat_lists[222]
+        assert 222 not in chat_lists
+    finally:
+        chat_lists.pop(222, None)
+
+
+def test_chat_lists_multiple_chats():
+    """Test managing multiple chat entries simultaneously."""
+    try:
+        chat_lists[1] = ChatDownloadList(chat_id=1, page=0)
+        chat_lists[2] = ChatDownloadList(chat_id=2, page=5)
+        chat_lists[3] = ChatDownloadList(chat_id=3, confirming="x")
+
+        assert len({k for k in chat_lists if k in (1, 2, 3)}) == 3
+        assert chat_lists[2].page == 5
+        assert chat_lists[3].confirming == "x"
+
+        del chat_lists[2]
+        assert 2 not in chat_lists
+        assert 1 in chat_lists
+        assert 3 in chat_lists
+    finally:
+        chat_lists.pop(1, None)
+        chat_lists.pop(2, None)
+        chat_lists.pop(3, None)
+
+
+def test_chat_lists_update_existing():
+    """Test updating fields of an existing ChatDownloadList entry."""
+    try:
+        msg = MockMessage(7)
+        chat_lists[500] = ChatDownloadList(chat_id=500)
+
+        # Mutate in place
+        chat_lists[500].message = msg
+        chat_lists[500].page = 2
+        chat_lists[500].confirming = "file_abc"
+
+        assert chat_lists[500].message.id == 7
+        assert chat_lists[500].page == 2
+        assert chat_lists[500].confirming == "file_abc"
+    finally:
+        chat_lists.pop(500, None)
 
 
 if __name__ == "__main__":

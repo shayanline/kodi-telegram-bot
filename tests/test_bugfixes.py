@@ -38,21 +38,6 @@ def test_init_state_reuses_existing(monkeypatch):
         file_id_map.pop(get_file_id("video.mp4"), None)
 
 
-def test_init_state_preserves_cancelled_flag(monkeypatch):
-    """A cancelled pre-registered state keeps cancelled=True after _init_state reuses it."""
-    ev = _StubEvent()
-    original = DownloadState("cancel.mp4", "/old", 100)
-    original.mark_cancelled()
-    states["cancel.mp4"] = original
-    try:
-        returned = _init_state("cancel.mp4", "/new", 200, ev)
-        assert returned is original
-        assert returned.cancelled is True
-    finally:
-        states.pop("cancel.mp4", None)
-        file_id_map.pop(get_file_id("cancel.mp4"), None)
-
-
 def test_init_state_creates_new_when_missing(monkeypatch):
     """When states has no entry, _init_state creates a new DownloadState and registers its file id."""
     ev = _StubEvent()

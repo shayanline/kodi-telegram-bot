@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock, patch
 
 import config
 import kodi
@@ -44,14 +45,7 @@ class FakeClient:
 def test_graceful_shutdown_cancels_active(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "DOWNLOAD_DIR", str(tmp_path))
 
-    class FakeMsg:
-        edited = None
-
-        async def edit(self, text, **kw):
-            FakeMsg.edited = text
-
     st = DownloadState("test.mp4", str(tmp_path / "test.mp4"), 100)
-    st.message = FakeMsg()
     states["test.mp4"] = st
 
     client = FakeClient()
@@ -59,13 +53,13 @@ def test_graceful_shutdown_cancels_active(monkeypatch, tmp_path):
 
     async def _run():
         queue.items.clear()
-        await main._graceful_shutdown(client, event)
+        with patch("main.update_all_lists", new_callable=AsyncMock):
+            await main._graceful_shutdown(client, event)
 
     asyncio.run(_run())
     assert st.cancelled
     assert event.is_set()
     assert client.disconnected
-    assert FakeMsg.edited is not None and "Cancelling" in FakeMsg.edited
     states.pop("test.mp4", None)
 
 

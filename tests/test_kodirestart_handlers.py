@@ -55,7 +55,7 @@ class FakeEvent:
 
 def _fresh_locks(monkeypatch):
     """Replace throttle locks so they work in a new asyncio.run() event loop."""
-    monkeypatch.setattr(throttle, "_handler_lock", asyncio.Lock())
+    monkeypatch.setattr(throttle, "handler_lock", asyncio.Lock())
     monkeypatch.setattr(throttle, "_tg_lock", asyncio.Lock())
 
 

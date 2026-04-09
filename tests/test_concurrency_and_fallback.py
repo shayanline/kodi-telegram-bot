@@ -13,7 +13,6 @@ from downloader.manager import (
     _prune_stale_categories,
     _safe_edit,
 )
-from downloader.state import DownloadState
 
 # ── Helpers ──
 
@@ -79,18 +78,6 @@ def test_safe_edit_falls_back_to_respond():
         msg.respond.assert_awaited_once_with("fallback text", buttons=None)
         assert result is not None
         assert result.id == 101  # FakeMessage returns id+100
-
-    asyncio.run(_run())
-
-
-def test_safe_edit_updates_state_message_on_fallback():
-    async def _run():
-        msg = FakeMessage(1, edit_fails=True)
-        state = DownloadState("file.mp4", "/tmp/file.mp4", 1000)
-        state.message = msg
-        result = await _safe_edit(msg, "new text", state=state)
-        assert state.message is not msg
-        assert state.message is result
 
     asyncio.run(_run())
 

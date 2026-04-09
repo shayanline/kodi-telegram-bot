@@ -5,26 +5,17 @@ import time
 
 import config
 import kodi
-import throttle
 import utils
 
-from .buttons import build_buttons
 from .state import CancelledDownload, DownloadState
 
 
 class RateLimiter:
-    def __init__(self, min_tg: float = 3.0, min_kodi: float = 2.0):
-        self.last_tg = 0.0
-        self.last_kodi = 0.0
-        self.min_tg = min_tg
-        self.min_kodi = min_kodi
+    """Rate limiter for Kodi notifications during download progress."""
 
-    def telegram_ok(self) -> bool:
-        now = time.time()
-        if now - self.last_tg >= self.min_tg:
-            self.last_tg = now
-            return True
-        return False
+    def __init__(self, min_kodi: float = 2.0):
+        self.last_kodi = 0.0
+        self.min_kodi = min_kodi
 
     def kodi_ok(self) -> bool:
         now = time.time()
@@ -41,19 +32,9 @@ async def wait_if_paused(state: DownloadState):
         raise CancelledDownload
 
 
-def create_progress_callback(filename: str, start: float, rate: RateLimiter, msg, state: DownloadState):
+def create_progress_callback(filename: str, start: float, rate: RateLimiter, state: DownloadState):
+    """Create a progress callback that updates in-memory state and sends Kodi notifications."""
     last = {"received": 0, "change": start}
-
-    async def send_tg_update(percent: int, received: int, total: int, speed: str):
-        bar = "▓" * (percent // 10) + "░" * (10 - percent // 10)
-        await throttle.edit_message(
-            msg,
-            f"Downloading: {filename}\n"
-            f"Progress: {bar} {percent}%\n"
-            f"Size: {utils.humanize_size(received)}/{utils.humanize_size(total)}\n"
-            f"Speed: {speed}/s",
-            buttons=build_buttons(state),
-        )
 
     async def progress(received: int, total: int):
         if await _check_state(state):
@@ -64,9 +45,6 @@ def create_progress_callback(filename: str, start: float, rate: RateLimiter, msg
         percent, speed = _calc(received, total, now - start)
 
         state.update_progress(received, percent, speed)
-
-        if not state.confirming_cancel and rate.telegram_ok():
-            await send_tg_update(percent, received, total, speed)
 
         # Memory warning and download progress are independent Kodi notifications;
         # only send one per tick to avoid stacking two popups back-to-back.
@@ -84,7 +62,7 @@ def create_progress_callback(filename: str, start: float, rate: RateLimiter, msg
     return progress
 
 
-async def _check_state(state: DownloadState) -> bool:  # returns True if cancelled
+async def _check_state(state: DownloadState) -> bool:
     if state.cancelled:
         return True
     await wait_if_paused(state)

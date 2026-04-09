@@ -23,7 +23,7 @@ from logger import log
 
 # ── Handler serialization ──
 
-_handler_lock = asyncio.Lock()
+handler_lock = asyncio.Lock()
 
 
 def serialized(fn):
@@ -35,7 +35,7 @@ def serialized(fn):
 
     @functools.wraps(fn)
     async def wrapper(*args, **kwargs):
-        async with _handler_lock:
+        async with handler_lock:
             return await fn(*args, **kwargs)
 
     return wrapper
@@ -118,6 +118,7 @@ async def answer_callback(event, text: str | None = None, **kwargs) -> None:
 __all__ = [
     "answer_callback",
     "edit_message",
+    "handler_lock",
     "send_message",
     "serialized",
 ]

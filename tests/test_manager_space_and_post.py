@@ -53,22 +53,13 @@ def test_ensure_disk_space_failure(monkeypatch):
     assert any("Not enough disk space" in m or "no deletable files found" in m for m in ev.messages)
 
 
-def test_post_download_check_success(tmp_path, monkeypatch):
-    # Create file meeting expected size threshold
+def test_post_download_check_success(tmp_path):
     path = tmp_path / "ok.bin"
     expected = 1000
     path.write_bytes(b"0" * expected)
     st = DownloadState("ok.bin", str(path), expected)
-
-    class M:
-        async def edit(self, *_a, **_k):  # minimal stub used by test
-            import asyncio
-
-            await asyncio.sleep(0)
-            return None
-
-    msg = M()
-    ok = asyncio.run(manager._post_download_check(True, expected, str(path), st, msg, "ok.bin"))
+    ev = StubEvent()
+    ok = asyncio.run(manager._post_download_check(True, expected, str(path), st, "ok.bin", ev))
     assert ok is True
 
 
@@ -79,17 +70,6 @@ def test_post_download_check_cancel_cleanup(tmp_path, monkeypatch):
     st = DownloadState("bad.bin", str(path), expected)
     st.cancelled = True
     monkeypatch.setattr(config, "DOWNLOAD_DIR", str(tmp_path))
-
-    class M:
-        last = None
-
-        async def edit(self, txt, **_):  # capture edit text for assertion
-            import asyncio
-
-            self.last = txt
-            await asyncio.sleep(0)
-
-    msg = M()
-    ok = asyncio.run(manager._post_download_check(False, expected, str(path), st, msg, "bad.bin"))
+    ev = StubEvent()
+    ok = asyncio.run(manager._post_download_check(False, expected, str(path), st, "bad.bin", ev))
     assert ok is False and not os.path.exists(path)
-    assert "cancelled" in msg.last.lower()

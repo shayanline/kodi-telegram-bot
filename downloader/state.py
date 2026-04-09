@@ -1,39 +1,18 @@
-"""Download state, message tracking, and shared mutable registries.
+"""Download state and shared mutable registries.
 
-Houses the global ``states`` dict and ``file_id_map`` to break circular
-imports between downloader sub-modules.
+Houses the global ``states`` dict, ``file_id_map``, and per-chat download
+list tracking to break circular imports between downloader sub-modules.
 """
 
 from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any
 
-from telethon.tl.custom.message import Message
-
-import utils
 from logger import log
 
 from .ids import get_file_id
-
-
-class MessageType(Enum):
-    """Types of messages that can be tracked."""
-
-    PROGRESS = "progress"
-    DOWNLOAD_LIST = "download_list"
-    QUEUE_LIST = "queue_list"
-    QUEUED = "queued"
-
-
-@dataclass(slots=True)
-class TrackedMessage:
-    """Represents a message being tracked for updates."""
-
-    message: Message
-    message_type: MessageType
 
 
 class CancelledDownload(Exception):  # pragma: no cover - simple marker
@@ -51,12 +30,10 @@ class DownloadState:
     filename: str
     path: str
     size: int
-    message: Message | None = None
     original_event: Any | None = None
     paused: bool = False
     cancelled: bool = False
     completed: bool = False
-    confirming_cancel: bool = False
     waiting_for_space: bool = False
     downloaded_bytes: int = 0
     progress_percent: int = 0
@@ -66,15 +43,6 @@ class DownloadState:
         self.downloaded_bytes = received
         self.progress_percent = percent
         self.speed = speed
-
-    def get_progress_text(self) -> str:
-        if self.cancelled or self.completed:
-            return ""
-        if self.paused:
-            return f"⏸️ Paused • {self.progress_percent}% • {utils.humanize_size(self.downloaded_bytes)}"
-        if self.progress_percent > 0:
-            return f"📊 {self.progress_percent}% • {utils.humanize_size(self.downloaded_bytes)} • {self.speed}/s"
-        return ""
 
     def mark_paused(self):
         if not self.cancelled:
@@ -93,56 +61,24 @@ class DownloadState:
             self.paused = False
 
 
-class MessageTracker:
-    """Central registry for Telegram messages associated with downloads.
+@dataclass(slots=True)
+class ChatDownloadList:
+    """Per-chat tracked download list message."""
 
-    Single source of truth — replaces the previous dual-tracking approach
-    (per-state lists + global registry).
-    """
-
-    def __init__(self):
-        self._messages: dict[str, list[TrackedMessage]] = {}
-
-    def register_message(self, filename: str, message, message_type: MessageType):
-        tracked = TrackedMessage(message, message_type)
-        if filename not in self._messages:
-            self._messages[filename] = []
-        self._messages[filename].append(tracked)
-
-    def get_messages(self, filename: str, message_type: MessageType | None = None) -> list[TrackedMessage]:
-        messages = self._messages.get(filename, [])
-        if message_type is not None:
-            return [tm for tm in messages if tm.message_type == message_type]
-        return list(messages)
-
-    def get_all_list_messages(self) -> list[TrackedMessage]:
-        result: list[TrackedMessage] = []
-        for messages in self._messages.values():
-            result.extend(
-                tm for tm in messages if tm.message_type in (MessageType.DOWNLOAD_LIST, MessageType.QUEUE_LIST)
-            )
-        return result
-
-    def cleanup_file(self, filename: str):
-        self._messages.pop(filename, None)
-
-    def trim_list_messages(self, sentinel_key: str, max_kept: int = 5):
-        """Keep only the most recent list messages for a sentinel key."""
-        msgs = self._messages.get(sentinel_key)
-        if msgs and len(msgs) > max_kept:
-            self._messages[sentinel_key] = msgs[-max_kept:]
+    chat_id: int
+    message: Any | None = None
+    page: int = 0
+    confirming: str | None = None  # file_id when showing cancel confirmation
 
 
-message_tracker = MessageTracker()
+# ── Per-chat download list tracking ──
+
+chat_lists: dict[int, ChatDownloadList] = {}
 
 # ── Shared mutable state (central location to avoid circular imports) ──
 
 states: dict[str, DownloadState] = {}
 file_id_map: dict[str, str] = {}
-
-# Message IDs of list messages currently showing cancel confirmation prompts.
-# Prevents periodic list updates from overwriting the interactive prompt.
-frozen_list_msg_ids: set[int] = set()
 
 
 def register_file_id(filename: str) -> str:
@@ -185,15 +121,12 @@ def find_pending_deletion(filename: str) -> tuple[str, PendingDeletion] | None:
 
 __all__ = [
     "CancelledDownload",
+    "ChatDownloadList",
     "DownloadState",
-    "MessageTracker",
-    "MessageType",
     "PendingDeletion",
-    "TrackedMessage",
+    "chat_lists",
     "file_id_map",
     "find_pending_deletion",
-    "frozen_list_msg_ids",
-    "message_tracker",
     "pending_deletions",
     "register_file_id",
     "resolve_file_id",

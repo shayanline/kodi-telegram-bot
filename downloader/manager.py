@@ -19,27 +19,16 @@ from logger import log
 from organizer import build_final_path, parse_filename
 from utils import remove_empty_parents
 
-from .buttons import build_buttons
 from .ids import get_file_id
-from .list_commands import (
-    build_downloads_list,
-    build_queue_list,
-    get_status_text,
-    handle_existing_lists_for_new_download,
-    register_list_handlers,
-    update_all_download_lists,
-)
+from .list_commands import register_list_handlers, update_all_lists
 from .progress import RateLimiter, create_progress_callback, wait_if_paused
 from .queue import QueuedItem, queue
 from .state import (
     CancelledDownload,
     DownloadState,
-    MessageType,
     PendingDeletion,
     file_id_map,
     find_pending_deletion,
-    frozen_list_msg_ids,
-    message_tracker,
     pending_deletions,
     register_file_id,
     resolve_file_id,
@@ -94,85 +83,24 @@ def _spawn(coro: Any) -> None:
     task.add_done_callback(_bg_tasks.discard)
 
 
-async def _fan_out_mirrors(state: DownloadState, text: str, kwargs: dict):
-    """Best-effort update of mirror progress messages (runs as background task)."""
-    for tracked in message_tracker.get_messages(state.filename, MessageType.PROGRESS):
-        if state.message and tracked.message.id == state.message.id:
-            continue
-        new_msg = await throttle.edit_message(tracked.message, text, **kwargs)
-        if new_msg is None:
-            new_msg = await throttle.send_message(tracked.message, text, **kwargs)
-        if new_msg and new_msg is not tracked.message:
-            tracked.message = new_msg
-
-
 async def _periodic_list_updater():
-    """Periodically update all tracked download list messages.
-
-    Consolidates per-download progress ticks into a single timer so the list
-    is rebuilt at most once per interval regardless of how many downloads are
-    active.  Skips messages currently showing cancel confirmation prompts.
-    """
+    """Periodically update all tracked download list messages."""
     while True:
         await asyncio.sleep(_LIST_UPDATE_INTERVAL)
         if not any(not s.cancelled and not s.completed for s in states.values()):
             continue
-        try:
-            text, buttons = build_downloads_list(states)
-            for tracked in message_tracker.get_messages("__downloads_list__", MessageType.DOWNLOAD_LIST):
-                if tracked.message.id in frozen_list_msg_ids:
-                    continue
-                new_msg = await throttle.edit_message(tracked.message, text, buttons=buttons)
-                if new_msg and new_msg is not tracked.message:
-                    tracked.message = new_msg
-        except Exception:
-            pass
+        async with throttle.handler_lock:
+            with contextlib.suppress(Exception):
+                await update_all_lists()
 
 
-async def _safe_edit(msg, text: str, buttons=None, state: DownloadState | None = None):
+async def _safe_edit(msg, text: str, buttons=None):
     """Edit a message, falling back to a new response if editing fails."""
     result = await throttle.edit_message(msg, text, buttons=buttons)
     if result is not None:
         return result
     log.debug("Edit failed, sending fallback message")
-    new_msg = await throttle.send_message(msg, text, buttons=buttons)
-    if state and new_msg:
-        state.message = new_msg
-    return new_msg
-
-
-async def _update_tracked_messages(filename: str, state: DownloadState):
-    """Best-effort update of mirror progress + list messages after state change."""
-    for tracked in message_tracker.get_messages(filename):
-        try:
-            if tracked.message_type == MessageType.PROGRESS:
-                # Skip the primary message (already updated by caller)
-                if state.message and tracked.message.id == state.message.id:
-                    continue
-                status = get_status_text(state)
-                text = f"{status}: {state.filename}"
-                buttons = build_buttons(state)
-                new_msg = await _safe_edit(tracked.message, text, buttons=buttons)
-                if new_msg and new_msg is not tracked.message:
-                    tracked.message = new_msg
-            elif tracked.message_type == MessageType.DOWNLOAD_LIST:
-                if tracked.message.id in frozen_list_msg_ids:
-                    continue
-                text, buttons = build_downloads_list(states)
-                new_msg = await _safe_edit(tracked.message, text, buttons=buttons)
-                if new_msg and new_msg is not tracked.message:
-                    tracked.message = new_msg
-            elif tracked.message_type == MessageType.QUEUE_LIST:
-                if queue.items:
-                    text, buttons = build_queue_list(queue.items)
-                else:
-                    text = "📝 No queued downloads"
-                    buttons = [[Button.inline("🔄 Refresh", data="refresh_queue")]]
-                new_msg = await _safe_edit(tracked.message, text, buttons=buttons)
-                if new_msg and new_msg is not tracked.message:
-                    tracked.message = new_msg
-        except Exception:
-            pass
+    return await throttle.send_message(msg, text, buttons=buttons)
 
 
 def filename_for_document(document: Document) -> str:
@@ -277,18 +205,7 @@ def _select_deletion_candidate(target_path: str, exclude: set[str]) -> str | Non
 async def _ensure_disk_space(
     event, filename: str, file_size: int, path: str | None = None, existing_message: Any = None
 ) -> tuple[bool, Any]:
-    """Interactive disk space assurance with recursive candidate deletions.
-
-    Holds the concurrency slot (caller acquires it) while waiting for user decision.
-    Timeout 120s -> cancellation. TEST_AUTO_ACCEPT path auto-deletes oldest files.
-    When *existing_message* is provided (e.g. the queued-slot message), prompts
-    edit that message instead of sending a new one.
-
-    Returns ``(ok, prompt_message)`` where *prompt_message* is the message used
-    for interactive prompts (or *existing_message* if space was sufficient on
-    first check). Callers can pass it as ``existing_message`` to
-    :func:`run_download` so the download reuses the same Telegram message.
-    """
+    """Interactive disk space assurance with recursive candidate deletions."""
     target_path = path or os.path.join(config.DOWNLOAD_DIR, filename)
     prompt_msg = existing_message
     while True:
@@ -356,7 +273,6 @@ async def _ensure_disk_space(
             return False, None
         choice = pending.choice
         pending_deletions.pop(pid, None)
-        # Check if download was cancelled while waiting (e.g. from /downloads)
         st = states.get(filename)
         if st and st.cancelled:
             return False, None
@@ -376,13 +292,11 @@ async def download_with_retries(
     document: Document,
     path: str,
     progress_cb: Callable[[int, int], Awaitable[None]],
-    msg: Any,
     state: DownloadState,
     *,
     source_message: Any | None = None,
 ) -> bool:
-    # Prefer the original Message so Telethon can refresh expired file
-    # references mid-download (msg_data requires input_chat + message id).
+    """Download with retries. Updates state only, no per-file messages."""
     media: Any = source_message or document
     retry = 0
     while retry <= config.MAX_RETRY_ATTEMPTS:
@@ -399,26 +313,19 @@ async def download_with_retries(
             retry += 1
             if retry > config.MAX_RETRY_ATTEMPTS:
                 return False
-            await throttle.edit_message(msg, f"Download stalled. Retrying ({retry}/{config.MAX_RETRY_ATTEMPTS})...")
+            log.info("Download stalled for %s, retrying (%d/%d)", state.filename, retry, config.MAX_RETRY_ATTEMPTS)
             await asyncio.sleep(2)
         except CancelledDownload:
             return False
         except Exception as e:
             log.warning("Download error attempt %d for %s: %s", retry, state.filename, e)
             retry += 1
-            if retry <= config.MAX_RETRY_ATTEMPTS:
-                await throttle.edit_message(
-                    msg,
-                    f"⚠️ Download error, retrying ({retry}/{config.MAX_RETRY_ATTEMPTS})...",
-                    buttons=build_buttons(state),
-                )
             await asyncio.sleep(1)
     return False
 
 
 def _final_cleanup(filename: str):
     """Remove state after download finishes (success, error, or cancellation)."""
-    message_tracker.cleanup_file(filename)
     states.pop(filename, None)
     file_id = get_file_id(filename)
     file_id_map.pop(file_id, None)
@@ -431,84 +338,29 @@ async def run_download(
     filename: str,
     file_size: int,
     path: str,
-    watcher_events: list[Any] | None = None,
-    existing_message: Any | None = None,
 ) -> None:
-    """Run a download and mirror progress to any duplicate requester chats."""
+    """Run a download. Progress is tracked in-memory; list messages are updated periodically."""
     state = _init_state(filename, path, file_size, event)
-    if existing_message is not None:
-        state.message = existing_message
-        msg = existing_message
-    else:
-        msg = await _send_start_message(event, state)
 
-    handle_existing_lists_for_new_download(filename)
-    await update_all_download_lists()
+    await kodi.notify("Download Started", filename)
+    log.info("Start download %s (%s)", filename, utils.humanize_size(file_size))
+    async with throttle.handler_lock:
+        await update_all_lists()
 
-    # Send initial messages to watchers, register as mirror progress messages
-    if watcher_events:
-        for wev in watcher_events:
-            try:
-                mirror_msg = await throttle.send_message(
-                    wev,
-                    f"Starting download of {state.filename}...",
-                    reply_to=getattr(wev, "id", None),
-                    buttons=build_buttons(state),
-                )
-                if mirror_msg:
-                    message_tracker.register_message(filename, mirror_msg, MessageType.PROGRESS)
-            except Exception:
-                pass
-
-    # Monkey-patch msg.edit to fan out updates to mirror messages.
-    #
-    # IMPORTANT: _patched_edit runs inside _tg_call (which holds _tg_lock).
-    # Mirror updates are scheduled as background tasks so _tg_lock is released
-    # promptly after the primary edit.  Download-list updates are handled by
-    # the periodic _list_updater task instead of inline here.
-    _orig_edit = msg.edit
-
-    async def _patched_edit(text: str, **kwargs):  # pragma: no cover simple wrapper
-        nonlocal _orig_edit
-        r = None
-        try:
-            r = await _orig_edit(text, **kwargs)
-        except Exception as exc:
-            if type(exc).__name__ != "MessageNotModifiedError":
-                # Primary message uneditable — send a replacement (direct API)
-                try:
-                    new_msg = await msg.respond(text, **kwargs)
-                except Exception:
-                    new_msg = None
-                if new_msg:
-                    state.message = new_msg
-                    _orig_edit = new_msg.edit
-                    r = new_msg
-        # Fan out to mirror progress messages in the background so _tg_lock
-        # is released without waiting for each mirror's network roundtrip.
-        _spawn(_fan_out_mirrors(state, text, dict(kwargs)))
-        return r
-
-    with contextlib.suppress(Exception):
-        msg.edit = _patched_edit
-
-    progress_cb = create_progress_callback(filename, time.time(), RateLimiter(), msg, state)
-
-    # Pass the original user message so Telethon can refresh file references
+    progress_cb = create_progress_callback(filename, time.time(), RateLimiter(), state)
     source_msg = getattr(event, "message", None)
 
     try:
-        success = await download_with_retries(
-            client, document, path, progress_cb, msg, state, source_message=source_msg
-        )
-        if not await _post_download_check(success, file_size, path, state, msg, filename):
+        success = await download_with_retries(client, document, path, progress_cb, state, source_message=source_msg)
+        if not await _post_download_check(success, file_size, path, state, filename, event):
             return
-        await _handle_success(msg, filename, path, state)
+        await _handle_success(filename, path, state, event)
     except Exception as e:
-        await _handle_error(e, state, msg, filename, path)
+        await _handle_error(e, state, filename, path, event)
     finally:
         _final_cleanup(filename)
-        await update_all_download_lists()
+        async with throttle.handler_lock:
+            await update_all_lists()
 
 
 def _init_state(filename: str, path: str, size: int, event: events.NewMessage.Event) -> DownloadState:
@@ -524,35 +376,17 @@ def _init_state(filename: str, path: str, size: int, event: events.NewMessage.Ev
     return st
 
 
-async def _send_start_message(event: events.NewMessage.Event, state: DownloadState):
-    start_text = f"Starting download of {state.filename}..."
-    msg = await throttle.send_message(
-        event,
-        start_text,
-        buttons=build_buttons(state),
-        reply_to=getattr(event, "id", None),
-    )
-    state.message = msg
-
-    message_tracker.register_message(state.filename, msg, MessageType.PROGRESS)
-
-    await kodi.notify("Download Started", state.filename)
-    log.info("Start download %s (%s)", state.filename, utils.humanize_size(state.size))
-    return msg
-
-
 async def _post_download_check(
     success: bool,
     expected_size: int,
     path: str,
     state: DownloadState,
-    msg,
     filename: str,
+    event: Any,
 ) -> bool:
     if success and validate_size(expected_size, path):
         return True
     if state.cancelled:
-        await _safe_edit(msg, f"🛑 Download cancelled: {filename}", state=state)
         if os.path.exists(path):
             try:
                 os.remove(path)
@@ -561,17 +395,17 @@ async def _post_download_check(
                 pass
         log.info("Cancelled %s", filename)
     else:
-        await _safe_edit(
-            msg,
-            f"❌ Download incomplete. Expected {utils.humanize_size(expected_size)}",
-            state=state,
+        await throttle.send_message(
+            event,
+            f"❌ Download incomplete: {filename}. Expected {utils.humanize_size(expected_size)}",
+            reply_to=getattr(event, "id", None),
         )
         await kodi.notify("Download Failed", f"Incomplete: {filename}")
         log.error("Incomplete download %s", filename)
     return False
 
 
-async def _handle_success(msg, filename: str, path: str, state: DownloadState) -> None:
+async def _handle_success(filename: str, path: str, state: DownloadState, event: Any) -> None:
     state.mark_completed()
     playing = await kodi.is_playing()
     text = (
@@ -579,8 +413,7 @@ async def _handle_success(msg, filename: str, path: str, state: DownloadState) -
         if playing
         else f"✅ Download complete: {filename}\nPlaying on Kodi..."
     )
-    await _safe_edit(msg, text, state=state)
-    await _update_tracked_messages(filename, state)
+    await throttle.send_message(event, text, reply_to=getattr(event, "id", None))
     if not playing:
         await kodi.play(path)
     await kodi.notify("Download Complete", filename)
@@ -590,13 +423,11 @@ async def _handle_success(msg, filename: str, path: str, state: DownloadState) -
 async def _handle_error(
     exc: Exception,
     state: DownloadState,
-    msg,
     filename: str,
     path: str,
+    event: Any,
 ) -> None:
     if state.cancelled:
-        await _safe_edit(msg, f"🛑 Download cancelled: {filename}", state=state)
-        await _update_tracked_messages(filename, state)
         if os.path.exists(path):
             try:
                 os.remove(path)
@@ -605,7 +436,11 @@ async def _handle_error(
                 pass
         return
     err = str(exc)
-    await _safe_edit(msg, f"❌ Error: {err[:200]}", state=state)
+    await throttle.send_message(
+        event,
+        f"❌ Error downloading {filename}: {err[:200]}",
+        reply_to=getattr(event, "id", None),
+    )
     await kodi.notify("Download Failed", err[:50])
     log.error("Download error %s: %s", filename, err)
 
@@ -614,26 +449,15 @@ async def _queued_runner(client: TelegramClient, qi: QueuedItem) -> None:
     """Runner for queued downloads: registers state for visibility, checks space, then downloads."""
     state = _init_state(qi.filename, qi.path, qi.size, qi.event)
     state.waiting_for_space = True
-    handle_existing_lists_for_new_download(qi.filename)
-    await update_all_download_lists()
+    async with throttle.handler_lock:
+        await update_all_lists()
     try:
-        ok, space_msg = await _ensure_disk_space(qi.event, qi.filename, qi.size, qi.path, existing_message=qi.message)
+        ok, _space_msg = await _ensure_disk_space(qi.event, qi.filename, qi.size, qi.path)
         if not ok or state.cancelled:
             _final_cleanup(qi.filename)
             return
         state.waiting_for_space = False
-        if space_msg:
-            qi.message = space_msg
-        await run_download(
-            client,
-            qi.event,
-            qi.document,
-            qi.filename,
-            qi.size,
-            qi.path,
-            watcher_events=qi.watcher_events or [],
-            existing_message=qi.message,
-        )
+        await run_download(client, qi.event, qi.document, qi.filename, qi.size, qi.path)
     except Exception:
         if qi.filename in states:
             _final_cleanup(qi.filename)
@@ -654,9 +478,9 @@ def register_handlers(client: TelegramClient):
     log.debug("Queue worker started")
 
     _register_download_handler(client)
-    _register_status_handler(client)
     _register_start_handler(client)
-    _register_control_callbacks(client)
+    _register_deletion_callbacks(client)
+    _register_category_selection(client)
     register_list_handlers(client)
 
 
@@ -664,97 +488,35 @@ def _same_user(ev1, ev2):
     return getattr(ev1, "sender_id", None) == getattr(ev2, "sender_id", None)
 
 
-async def _handle_active_duplicate(event, active_state: DownloadState, filename: str):
-    # Resume if paused
-    if active_state.paused and not active_state.cancelled:
-        active_state.mark_resumed()
-        await _update_tracked_messages(filename, active_state)
-
-    progress_msg = getattr(active_state, "message", None)
-    reply_target = getattr(progress_msg, "id", None)
-
-    if reply_target:
-        try:
-            base = (
-                "⏳ Already in progress"
-                if active_state.original_event and _same_user(event, active_state.original_event)
-                else "⏳ Already being downloaded"
-            )
-            msg = await throttle.send_message(event, f"{base}: {filename}", reply_to=reply_target)
-            if msg:
-                return
-        except Exception:
-            pass  # fall through to creating mirror message
-
-    # Progress message missing (deleted?) — create a new mirror with progress mirroring
-    try:
-        mirror_msg = await throttle.send_message(
-            event,
-            f"⏳ Already being downloaded: {filename}. You'll receive progress here.",
-            reply_to=getattr(event, "id", None),
-        )
-        if mirror_msg:
-            message_tracker.register_message(filename, mirror_msg, MessageType.PROGRESS)
-    except Exception:
-        pass
+async def _handle_active_duplicate(event, filename: str):
+    """Send brief acknowledgement for duplicate active download request."""
+    await throttle.send_message(
+        event,
+        f"⏳ Already downloading: {filename}",
+        reply_to=getattr(event, "id", None),
+    )
 
 
-async def _handle_queued_duplicate(event, queued_item: QueuedItem, filename: str):
-    queued_msg = getattr(queued_item, "message", None)
-    reply_target = getattr(queued_msg, "id", None)
-    same = queued_item.event and _same_user(event, queued_item.event)
-
-    if reply_target:
-        try:
-            msg = await throttle.send_message(
-                event,
-                f"🕒 Already queued: {filename}",
-                reply_to=reply_target,
-            )
-            if msg:
-                if not same:
-                    queued_item.add_watcher(event)
-                return
-        except Exception:
-            pass  # recreate below
-
-    if not queued_item.file_id:
-        queued_item.file_id = get_file_id(filename)
-
-    try:
-        msg = await throttle.send_message(
-            event,
-            f"🕒 Queued: {filename}\nWaiting for free slot (limit {config.MAX_CONCURRENT_DOWNLOADS})",
-            buttons=[[Button.inline("🛑 Cancel", data=f"qcancel:{queued_item.file_id}")]],
-            reply_to=getattr(event, "id", None),
-        )
-        if msg:
-            if not queued_item.message:
-                queued_item.message = msg
-            message_tracker.register_message(filename, msg, MessageType.QUEUED)
-            if not same:
-                queued_item.add_watcher(event)
-    except Exception:
-        pass
+async def _handle_queued_duplicate(event, filename: str):
+    """Send brief acknowledgement for duplicate queued download request."""
+    await throttle.send_message(
+        event,
+        f"🕒 Already queued: {filename}",
+        reply_to=getattr(event, "id", None),
+    )
 
 
 async def _do_enqueue(client: TelegramClient, document, filename, size, path, event):
-    """Enqueue a download and send queue position message."""
+    """Enqueue a download and send acknowledgement."""
     file_id = register_file_id(filename)
     qi = QueuedItem(filename, document, size, path, event, file_id=file_id)
     position = await queue.enqueue(qi)
-    try:
-        msg = await throttle.send_message(
-            event,
-            f"🕒 Queued #{position}: {filename}\nWaiting for free slot (limit {config.MAX_CONCURRENT_DOWNLOADS})",
-            buttons=[[Button.inline("🛑 Cancel", data=f"qcancel:{file_id}")]],
-            reply_to=getattr(event, "id", None),
-        )
-        if msg:
-            qi.message = msg
-            message_tracker.register_message(filename, msg, MessageType.QUEUED)
-    except Exception:
-        pass
+    await throttle.send_message(
+        event,
+        f"📥 Queued (#{position}): {filename}\nUse /downloads to see the queue.",
+        reply_to=getattr(event, "id", None),
+    )
+    await update_all_lists()
 
 
 async def _start_direct_download(client: TelegramClient, event, document, filename, size, path):
@@ -766,14 +528,13 @@ async def _start_direct_download(client: TelegramClient, event, document, filena
                 _final_cleanup(filename)
                 return
             st.waiting_for_space = True
-            handle_existing_lists_for_new_download(filename)
-            await update_all_download_lists()
-            ok, space_msg = await _ensure_disk_space(event, filename, size, path)
+            await update_all_lists()
+            ok, _space_msg = await _ensure_disk_space(event, filename, size, path)
             if not ok or st.cancelled:
                 _final_cleanup(filename)
                 return
             st.waiting_for_space = False
-            await run_download(client, event, document, filename, size, path, existing_message=space_msg)
+            await run_download(client, event, document, filename, size, path)
     except Exception:
         if filename in states:
             _final_cleanup(filename)
@@ -795,7 +556,6 @@ def _register_download_handler(client: TelegramClient):
             return
         _prune_stale_categories()
         original_filename = filename_for_document(document)
-        # Provide message text (caption) to parser for richer extraction
         parsed = parse_filename(original_filename, text=(event.raw_text or None))
         ambiguous = parsed.category == "other" and parsed.year is not None
         if not ambiguous or not config.ORGANIZE_MEDIA:
@@ -804,18 +564,15 @@ def _register_download_handler(client: TelegramClient):
         else:
             lookup_name = original_filename
 
-        # Lock prevents race: two events for the same file could both pass the
-        # duplicate check before either registers state, causing double downloads.
-        # Lock is held only during check+register, NOT during the actual download.
         direct_download = None
         async with _download_lock:
             active_state = states.get(lookup_name)
             if active_state:
-                await _handle_active_duplicate(event, active_state, lookup_name)
+                await _handle_active_duplicate(event, lookup_name)
                 return
             queued_item = queue.items.get(lookup_name)
             if queued_item:
-                await _handle_queued_duplicate(event, queued_item, lookup_name)
+                await _handle_queued_duplicate(event, lookup_name)
                 return
             if ambiguous and config.ORGANIZE_MEDIA:
                 file_id = register_file_id(original_filename)
@@ -844,43 +601,20 @@ def _register_download_handler(client: TelegramClient):
 
         if direct_download:
             document, filename, size, path = direct_download
+            await throttle.send_message(
+                event,
+                f"📥 Added: {filename}\nUse /downloads to see progress.",
+                reply_to=getattr(event, "id", None),
+            )
             _spawn(_start_direct_download(client, event, document, filename, size, path))
             log.debug("Started %s", filename)
-
-
-def _register_status_handler(client: TelegramClient):
-    @client.on(
-        events.NewMessage(
-            func=lambda e: e.is_private and not e.document and (e.raw_text or "").strip().lower() == "/status"
-        )
-    )
-    async def _status(event):
-        sender = await event.get_sender()
-        if not config.is_user_allowed(getattr(sender, "id", None), getattr(sender, "username", None)):
-            await throttle.send_message(event, "🛑 Not authorized.")
-            return
-        q = list(queue.items.keys())
-        active = list(states.keys())
-        parts = [
-            f"Active: {len(active)}/{config.MAX_CONCURRENT_DOWNLOADS}",
-            f"Queued: {len(q)}",
-        ]
-        if active:
-            parts.append("\nCurrent downloads:")
-            parts.extend(f" • {fn}" for fn in active[:10])
-        if q:
-            parts.append("\nQueue:")
-            parts.extend(f" {i + 1}. {fn}" for i, fn in enumerate(q[:15]))
-        await throttle.send_message(event, "\n".join(parts))
 
 
 def _register_start_handler(client: TelegramClient):
     HELP_TEXT = (
         "Send me a video or audio file — I'll download it and play it on Kodi.\n\n"
         "Commands:\n"
-        "/status - show active + queued downloads summary\n"
-        "/downloads - show detailed active downloads list\n"
-        "/queue - show detailed queued downloads list\n"
+        "/downloads - show downloads & queue list\n"
         "/files - browse and manage downloaded files\n"
         "/kodi - Kodi remote control\n"
         "/restart_kodi - quit and restart Kodi\n"
@@ -895,268 +629,6 @@ def _register_start_handler(client: TelegramClient):
             await throttle.send_message(event, "🛑 Not authorized.")
             return
         await throttle.send_message(event, HELP_TEXT)
-
-
-def _register_control_callbacks(client: TelegramClient):
-    _register_pause_resume_cancel(client)
-    _register_cancel_confirm(client)
-    _register_qcancel(client)
-    _register_qcancel_confirm(client)
-    _register_category_selection(client)
-    _register_deletion_callbacks(client)
-
-
-def _register_pause_resume_cancel(client: TelegramClient):
-    pattern = b"(pause|resume|cancel|lcancel):"
-
-    async def _update_progress_message(state: DownloadState, status_text: str):
-        """Update the primary progress message with new buttons and status."""
-        if not state.message:
-            return
-        if state.paused:
-            progress_text = state.get_progress_text() or "Paused"
-            content = f"{status_text}\nFile: {state.filename}\nStatus: {progress_text}"
-        else:
-            progress_text = state.get_progress_text()
-            content = (
-                f"{status_text}\nFile: {state.filename}\n{progress_text}"
-                if progress_text
-                else f"{status_text}\nFile: {state.filename}"
-            )
-        buttons = build_buttons(state)
-        await throttle.edit_message(state.message, content, buttons=buttons)
-
-    async def _do_pause(st, event):
-        if st.paused:
-            await throttle.answer_callback(event, "Already paused", alert=False)
-            return
-        st.mark_paused()
-        await _update_progress_message(st, "⏸️ Paused")
-        await _update_tracked_messages(st.filename, st)
-        await throttle.answer_callback(event, "Paused")
-
-    async def _do_resume(st, event):
-        if not st.paused:
-            await throttle.answer_callback(event, "Not paused", alert=False)
-            return
-        st.mark_resumed()
-        await _update_progress_message(st, "▶️ Resuming...")
-        await _update_tracked_messages(st.filename, st)
-        await throttle.answer_callback(event, "Resuming")
-
-    async def _do_cancel(st, event, *, from_list: bool = False):
-        file_id = get_file_id(st.filename)
-        st.confirming_cancel = True
-        if from_list:
-            frozen_list_msg_ids.add(event._message_id)
-        text = f"⚠️ **Cancel this download?**\n\n{st.filename}"
-        yes_data = f"cyl:{file_id}" if from_list else f"cy:{file_id}"
-        no_data = f"cnl:{file_id}" if from_list else f"cn:{file_id}"
-        buttons = [
-            [
-                Button.inline("✅ Yes, Cancel", data=yes_data),
-                Button.inline("❌ No, Go Back", data=no_data),
-            ]
-        ]
-        await throttle.edit_message(event, text, buttons=buttons)
-        await throttle.answer_callback(event)
-
-    @client.on(events.CallbackQuery(pattern=pattern))
-    @throttle.serialized
-    async def _prc(event):
-        action, file_id = event.data.decode().split(":", 1)
-        filename = resolve_file_id(file_id)
-        if not filename:
-            await throttle.answer_callback(event, _NOT_FOUND, alert=False)
-            return
-        st = states.get(filename)
-        if not st or st.cancelled:
-            await throttle.answer_callback(event, _NOT_FOUND, alert=False)
-            return
-        if action == "pause":
-            await _do_pause(st, event)
-        elif action == "resume":
-            await _do_resume(st, event)
-        else:
-            await _do_cancel(st, event, from_list=(action == "lcancel"))
-
-
-def _register_cancel_confirm(client: TelegramClient):
-    @client.on(events.CallbackQuery(pattern=b"c(y|n)l?:"))
-    @throttle.serialized
-    async def _cancel_confirm(event):
-        frozen_list_msg_ids.discard(event._message_id)
-        data = event.data.decode()
-        colon_idx = data.index(":")
-        prefix = data[:colon_idx]
-        file_id = data[colon_idx + 1 :]
-        from_list = prefix.endswith("l")
-        confirmed = prefix.startswith("cy")
-        filename = resolve_file_id(file_id)
-        if not filename:
-            await throttle.answer_callback(event, _NOT_FOUND, alert=False)
-            return
-        st = states.get(filename)
-        if not st:
-            await throttle.answer_callback(event, _NOT_FOUND, alert=False)
-            return
-        st.confirming_cancel = False
-        if confirmed:
-            st.mark_cancelled()
-            _unblock_pending_deletion(filename)
-            await throttle.edit_message(event, f"🛑 Cancelling: {st.filename}", buttons=None)
-            await _update_tracked_messages(filename, st)
-            await throttle.answer_callback(event, "Cancelling")
-        elif from_list:
-            if states:
-                text, buttons = build_downloads_list(states)
-            else:
-                text = "📁 No active downloads"
-                buttons = [[Button.inline("🔄 Refresh", data="refresh_downloads")]]
-            await throttle.edit_message(event, text, buttons=buttons)
-            await throttle.answer_callback(event)
-        else:
-            status = get_status_text(st)
-            progress_text = st.get_progress_text()
-            text = f"{status}: {st.filename}"
-            if progress_text:
-                text += f"\n{progress_text}"
-            buttons = build_buttons(st)
-            await throttle.edit_message(event, text, buttons=buttons)
-            await throttle.answer_callback(event)
-
-
-def _register_qcancel(client: TelegramClient):
-    @client.on(events.CallbackQuery(pattern=b"l?qcancel:"))
-    @throttle.serialized
-    async def _qcancel(event):
-        data = event.data.decode()
-        from_list = data.startswith("lqcancel:")
-        file_id = data.split(":", 1)[1]
-        filename = resolve_file_id(file_id)
-        if not filename:
-            await throttle.answer_callback(event, _NOT_FOUND, alert=False)
-            return
-        qi = queue.items.get(filename)
-        if qi and not qi.cancelled:
-            if from_list:
-                frozen_list_msg_ids.add(event._message_id)
-            text = f"⚠️ **Cancel this queued download?**\n\n{filename}"
-            yes_data = f"qcyl:{file_id}" if from_list else f"qcy:{file_id}"
-            no_data = f"qcnl:{file_id}" if from_list else f"qcn:{file_id}"
-            buttons = [
-                [
-                    Button.inline("✅ Yes, Cancel", data=yes_data),
-                    Button.inline("❌ No, Go Back", data=no_data),
-                ]
-            ]
-            await throttle.edit_message(event, text, buttons=buttons)
-            await throttle.answer_callback(event)
-            return
-        # Item may have started — fall through to active cancel
-        st = states.get(filename)
-        if st and not st.cancelled:
-            st.confirming_cancel = True
-            if from_list:
-                frozen_list_msg_ids.add(event._message_id)
-            text = f"⚠️ **Cancel this download?**\n\n{filename}"
-            yes_data = f"cyl:{file_id}" if from_list else f"cy:{file_id}"
-            no_data = f"cnl:{file_id}" if from_list else f"cn:{file_id}"
-            buttons = [
-                [
-                    Button.inline("✅ Yes, Cancel", data=yes_data),
-                    Button.inline("❌ No, Go Back", data=no_data),
-                ]
-            ]
-            await throttle.edit_message(event, text, buttons=buttons)
-            await throttle.answer_callback(event)
-            return
-        await throttle.answer_callback(event, _NOT_FOUND, alert=False)
-
-
-def _register_qcancel_confirm(client: TelegramClient):
-    @client.on(events.CallbackQuery(pattern=b"qc(y|n)l?:"))
-    @throttle.serialized
-    async def _qcancel_confirm(event):
-        frozen_list_msg_ids.discard(event._message_id)
-        data = event.data.decode()
-        colon_idx = data.index(":")
-        prefix = data[:colon_idx]
-        file_id = data[colon_idx + 1 :]
-        from_list = prefix.endswith("l")
-        confirmed = prefix.startswith("qcy")
-        filename = resolve_file_id(file_id)
-        if not filename:
-            await throttle.answer_callback(event, _NOT_FOUND, alert=False)
-            return
-
-        if confirmed:
-            qi = queue.items.get(filename)
-            if not (qi and not qi.cancelled):
-                # Item may have started — cancel active download
-                st = states.get(filename)
-                if st and not st.cancelled:
-                    st.mark_cancelled()
-                    await throttle.edit_message(event, f"🛑 Cancelling: {filename}", buttons=None)
-                    await _update_tracked_messages(filename, st)
-                    await throttle.answer_callback(event, "Cancelling")
-                else:
-                    await throttle.answer_callback(event, _NOT_FOUND, alert=False)
-                return
-
-            for tracked in message_tracker.get_messages(filename):
-                if tracked.message_type in (MessageType.PROGRESS, MessageType.QUEUED):
-                    await throttle.edit_message(
-                        tracked.message,
-                        f"🛑 Cancelled: {filename}\nThis download was cancelled from the queue.",
-                        buttons=None,
-                    )
-
-            list_messages = message_tracker.get_all_list_messages()
-            queue.cancel(filename)
-
-            for tracked in list_messages:
-                if tracked.message_type == MessageType.QUEUE_LIST:
-                    if queue.items:
-                        text, buttons = build_queue_list(queue.items)
-                        await throttle.edit_message(tracked.message, text, buttons=buttons)
-                    else:
-                        await throttle.edit_message(
-                            tracked.message,
-                            "📝 No queued downloads",
-                            buttons=[[Button.inline("🔄 Refresh", data="refresh_queue")]],
-                        )
-
-            message_tracker.cleanup_file(filename)
-            file_id_map.pop(file_id, None)
-            await throttle.answer_callback(event, "Cancelled")
-        elif from_list:
-            if queue.items:
-                text, buttons = build_queue_list(queue.items)
-            else:
-                text = "📝 No queued downloads"
-                buttons = [[Button.inline("🔄 Refresh", data="refresh_queue")]]
-            await throttle.edit_message(event, text, buttons=buttons)
-            await throttle.answer_callback(event)
-        else:
-            qi = queue.items.get(filename)
-            if qi and qi.file_id:
-                text = f"🕒 Queued: {filename}\nWaiting for free slot (limit {config.MAX_CONCURRENT_DOWNLOADS})"
-                buttons = [[Button.inline("🛑 Cancel", data=f"qcancel:{qi.file_id}")]]
-            else:
-                st = states.get(filename)
-                if st and not st.cancelled:
-                    status = get_status_text(st)
-                    progress_text = st.get_progress_text()
-                    text = f"{status}: {st.filename}"
-                    if progress_text:
-                        text += f"\n{progress_text}"
-                    buttons = build_buttons(st)
-                else:
-                    text = _NOT_FOUND
-                    buttons = None
-            await throttle.edit_message(event, text, buttons=buttons)
-            await throttle.answer_callback(event)
 
 
 def _register_deletion_callbacks(client: TelegramClient):
@@ -1226,7 +698,6 @@ def _register_category_selection(client: TelegramClient):
                 await _do_enqueue(client, document, final_name, size, path, orig_event)
                 await throttle.answer_callback(event, "Queued", alert=False)
                 return
-            # Pre-register state so duplicates are detected after lock release
             register_file_id(final_name)
             states[final_name] = DownloadState(final_name, path, size, original_event=orig_event)
             direct_download = (document, final_name, size, path)
