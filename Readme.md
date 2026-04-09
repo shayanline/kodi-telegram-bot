@@ -69,12 +69,12 @@ Optionally set a port (default 8080), username, and password. You will use these
 ## Quick Start
 
 ```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh   # one-time install
 git clone https://github.com/shemekhe/kodi-telegram-bot.git
 cd kodi-telegram-bot
-pip install uv            # one-time install
 uv sync                   # creates .venv and installs all dependencies
 cp .env.example .env      # then edit .env with your values
-python main.py
+uv run python main.py
 ```
 
 Send the bot a video or audio file in a private chat. Use `/status` at any time to check progress.
@@ -110,7 +110,7 @@ Copy `.env.example` to `.env` and fill in the values. The three Telegram variabl
 
 ## Usage
 
-Start the bot with `python main.py`. It only responds to private messages.
+Start the bot with `uv run python main.py`. It only responds to private messages.
 
 ### Commands
 
@@ -224,7 +224,7 @@ The bot is optimized for Raspberry Pi 3 or later. This section walks through a p
 
 ```sh
 sudo apt update
-sudo apt install -y python3 python3-venv git
+sudo apt install -y python3 git
 ```
 
 ### Install uv
