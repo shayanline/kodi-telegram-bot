@@ -88,6 +88,9 @@ async def _graceful_shutdown(client, shutdown_event: asyncio.Event):
         return
     log.info("Shutting down gracefully...")
     shutdown_event.set()
+    # Cancel queued items first so they don't start when active slots free up
+    for qi in queue.items.values():
+        qi.cancelled = True
     snapshot = tuple(states.values())
     for st in snapshot:
         st.mark_cancelled()

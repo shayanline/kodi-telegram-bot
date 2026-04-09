@@ -72,6 +72,40 @@ def test_graceful_shutdown_skips_if_already_set(monkeypatch, tmp_path):
     assert not client.disconnected
 
 
+def test_graceful_shutdown_cancels_queued_before_active(monkeypatch, tmp_path):
+    """Queue items must be marked cancelled before active downloads to prevent them starting."""
+    monkeypatch.setattr(config, "DOWNLOAD_DIR", str(tmp_path))
+
+    from downloader.queue import QueuedItem
+
+    st = DownloadState("active.mp4", str(tmp_path / "active.mp4"), 100)
+    states["active.mp4"] = st
+    qi = QueuedItem("queued.mp4", None, 100, str(tmp_path / "queued.mp4"), None)
+    queue.items["queued.mp4"] = qi
+
+    cancel_order: list[str] = []
+    orig_mark = DownloadState.mark_cancelled
+
+    def tracking_cancel(self):
+        cancel_order.append(f"active:{self.filename}")
+        orig_mark(self)
+
+    monkeypatch.setattr(DownloadState, "mark_cancelled", tracking_cancel)
+
+    client = FakeClient()
+    event = asyncio.Event()
+
+    async def _run():
+        with patch("main.update_all_lists", new_callable=AsyncMock):
+            await main._graceful_shutdown(client, event)
+
+    asyncio.run(_run())
+    assert qi.cancelled, "Queued item must be cancelled"
+    assert st.cancelled, "Active download must be cancelled"
+    states.pop("active.mp4", None)
+    queue.items.pop("queued.mp4", None)
+
+
 # ── _cleanup_partials with queue items ──
 
 

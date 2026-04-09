@@ -426,7 +426,7 @@ def _register_qcancel_confirm(client: TelegramClient):
 
 
 def _register_cancel_all(client: TelegramClient):
-    @client.on(events.CallbackQuery(pattern=b"dl_cancelall"))
+    @client.on(events.CallbackQuery(pattern=rb"dl_cancelall$"))
     @throttle.serialized
     async def _cancel_all(event):
         active = [fn for fn, st in states.items() if not st.cancelled and not st.completed]
@@ -451,7 +451,7 @@ def _register_cancel_all(client: TelegramClient):
 
 
 def _register_cancel_all_confirm(client: TelegramClient):
-    @client.on(events.CallbackQuery(pattern=rb"dl_ca(y|n)"))
+    @client.on(events.CallbackQuery(pattern=rb"dl_ca(y|n)$"))
     @throttle.serialized
     async def _cancel_all_confirm(event):
         choice = event.data.decode()

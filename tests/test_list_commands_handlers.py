@@ -570,6 +570,19 @@ def test_register_list_handlers_registers_correct_count():
     assert len(client.handlers) == 10
 
 
+# ── Callback pattern collision guard ──
+
+
+def test_cancelall_pattern_does_not_match_confirm():
+    """dl_cancelall must not match the cancel-all confirm pattern (dl_ca(y|n)$)."""
+    import re
+
+    p_confirm = re.compile(rb"dl_ca(y|n)$")
+    assert p_confirm.match(b"dl_cancelall") is None, "dl_cancelall must not trigger _cancel_all_confirm"
+    assert p_confirm.match(b"dl_cay") is not None
+    assert p_confirm.match(b"dl_can") is not None
+
+
 # ── update_all_lists ──
 
 
