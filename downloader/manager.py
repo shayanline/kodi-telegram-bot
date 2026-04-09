@@ -99,14 +99,11 @@ async def _fan_out_mirrors(state: DownloadState, text: str, kwargs: dict):
     for tracked in message_tracker.get_messages(state.filename, MessageType.PROGRESS):
         if state.message and tracked.message.id == state.message.id:
             continue
-        try:
-            await tracked.message.edit(text, **kwargs)
-        except Exception as exc:
-            if type(exc).__name__ != "MessageNotModifiedError":
-                with contextlib.suppress(Exception):
-                    new_mirror = await tracked.message.respond(text, **kwargs)
-                    if new_mirror:
-                        tracked.message = new_mirror
+        new_msg = await throttle.edit_message(tracked.message, text, **kwargs)
+        if new_msg is None:
+            new_msg = await throttle.send_message(tracked.message, text, **kwargs)
+        if new_msg and new_msg is not tracked.message:
+            tracked.message = new_msg
 
 
 async def _periodic_list_updater():
