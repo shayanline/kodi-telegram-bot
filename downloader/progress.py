@@ -44,13 +44,6 @@ async def wait_if_paused(state: DownloadState):
 def create_progress_callback(filename: str, start: float, rate: RateLimiter, msg, state: DownloadState | None):
     last = {"received": 0, "change": start}
 
-    async def maybe_warn_memory():
-        try:
-            if utils.maybe_memory_warning(config.MEMORY_WARNING_PERCENT):
-                await kodi.notify("Memory Warning", f"High RAM usage > {config.MEMORY_WARNING_PERCENT}%")
-        except Exception:
-            pass
-
     def _build_edit_kwargs():
         return {"buttons": build_buttons(state)} if state else {}
 
@@ -64,7 +57,6 @@ def create_progress_callback(filename: str, start: float, rate: RateLimiter, msg
             f"Speed: {speed}/s",
             **_build_edit_kwargs(),
         )
-        await maybe_warn_memory()
 
     async def progress(received: int, total: int):
         if await _check_state(state):
@@ -80,7 +72,17 @@ def create_progress_callback(filename: str, start: float, rate: RateLimiter, msg
         if not (state and state.confirming_cancel) and rate.telegram_ok():
             await send_tg_update(percent, received, total, speed)
 
-        if percent > 0 and percent % 10 == 0 and rate.kodi_ok() and not await kodi.is_playing():
+        # Memory warning and download progress are independent Kodi notifications;
+        # only send one per tick to avoid stacking two popups back-to-back.
+        mem_warned = False
+        try:
+            if utils.maybe_memory_warning(config.MEMORY_WARNING_PERCENT):
+                await kodi.notify("Memory Warning", f"High RAM usage > {config.MEMORY_WARNING_PERCENT}%")
+                mem_warned = True
+        except Exception:
+            pass
+
+        if not mem_warned and percent > 0 and percent % 10 == 0 and rate.kodi_ok() and not await kodi.is_playing():
             await kodi.progress_notify(filename, percent, speed)
 
     return progress
