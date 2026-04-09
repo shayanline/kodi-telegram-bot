@@ -498,3 +498,103 @@ def test_info_waiting_for_space_send_fails(monkeypatch):
     finally:
         state_mod.pending_deletions.update(orig)
     assert any("Failed" in (a["text"] or "") for a in answered)
+
+
+# ── update_all_download_lists ──
+
+
+def test_update_all_download_lists_edits_sentinel_messages(monkeypatch):
+    """update_all_download_lists edits all messages tracked under __downloads_list__."""
+    from downloader.list_commands import update_all_download_lists
+
+    edited_calls = []
+    tracker = MessageTracker()
+    monkeypatch.setattr(lc, "message_tracker", tracker)
+
+    msg1 = FakeMsg(10)
+    msg2 = FakeMsg(20)
+    tracker.register_message("__downloads_list__", msg1, MessageType.DOWNLOAD_LIST, 1)
+    tracker.register_message("__downloads_list__", msg2, MessageType.DOWNLOAD_LIST, 2)
+
+    st = DownloadState("dl.mp4", "/tmp/dl.mp4", 1000)
+    st.update_progress(500, 50, "1 MB/s")
+    monkeypatch.setattr(lc, "states", {"dl.mp4": st})
+
+    async def fake_edit(target, text, **kw):
+        edited_calls.append({"target_id": target.id, "text": text})
+        return target
+
+    monkeypatch.setattr(throttle, "edit_message", fake_edit)
+
+    asyncio.run(update_all_download_lists())
+    assert len(edited_calls) == 2
+    assert all("Active Downloads" in c["text"] for c in edited_calls)
+    assert {c["target_id"] for c in edited_calls} == {10, 20}
+
+
+def test_update_all_download_lists_empty_states(monkeypatch):
+    """When no active downloads, list messages show 'No active downloads'."""
+    from downloader.list_commands import update_all_download_lists
+
+    edited_calls = []
+    tracker = MessageTracker()
+    monkeypatch.setattr(lc, "message_tracker", tracker)
+    monkeypatch.setattr(lc, "states", {})
+
+    msg = FakeMsg(30)
+    tracker.register_message("__downloads_list__", msg, MessageType.DOWNLOAD_LIST, 1)
+
+    async def fake_edit(target, text, **kw):
+        edited_calls.append({"text": text})
+        return target
+
+    monkeypatch.setattr(throttle, "edit_message", fake_edit)
+
+    asyncio.run(update_all_download_lists())
+    assert len(edited_calls) == 1
+    assert "No active downloads" in edited_calls[0]["text"]
+
+
+def test_update_all_download_lists_tolerates_edit_failure(monkeypatch):
+    """Edit failure is silently suppressed."""
+    from downloader.list_commands import update_all_download_lists
+
+    tracker = MessageTracker()
+    monkeypatch.setattr(lc, "message_tracker", tracker)
+    monkeypatch.setattr(lc, "states", {})
+
+    msg = FakeMsg(40)
+    tracker.register_message("__downloads_list__", msg, MessageType.DOWNLOAD_LIST, 1)
+
+    async def failing_edit(target, text, **kw):
+        raise RuntimeError("edit boom")
+
+    monkeypatch.setattr(throttle, "edit_message", failing_edit)
+
+    # Should not raise
+    asyncio.run(update_all_download_lists())
+
+
+def test_update_all_download_lists_no_tracked_messages(monkeypatch):
+    """No sentinel messages means no edits (no-op)."""
+    from downloader.list_commands import update_all_download_lists
+
+    tracker = MessageTracker()
+    monkeypatch.setattr(lc, "message_tracker", tracker)
+    monkeypatch.setattr(lc, "states", {})
+
+    # Should not raise with empty tracker
+    asyncio.run(update_all_download_lists())
+
+
+# ── Duplicate Cancel button fix ──
+
+
+def test_build_downloads_list_waiting_for_space_single_cancel():
+    """waiting_for_space row has exactly one Cancel button (not two)."""
+    st = DownloadState("space2.mp4", "/tmp/space2.mp4", 1000)
+    st.waiting_for_space = True
+    _text, buttons = build_downloads_list({"space2.mp4": st})
+    row = buttons[0]
+    cancel_count = sum(1 for b in row if hasattr(b, "text") and "Cancel" in b.text)
+    assert cancel_count == 1

@@ -27,6 +27,7 @@ from .list_commands import (
     get_status_text,
     handle_existing_lists_for_new_download,
     register_list_handlers,
+    update_all_download_lists,
 )
 from .progress import RateLimiter, create_progress_callback, wait_if_paused
 from .queue import QueuedItem, queue
@@ -61,6 +62,10 @@ _download_lock = asyncio.Lock()
 
 # Prevent GC of fire-and-forget download tasks (see RUF006)
 _bg_tasks: set[asyncio.Task[None]] = set()
+
+# Rate-limit download-list edits inside _patched_edit (runs under _tg_lock)
+_list_update_ts: dict[str, float] = {"last": 0.0}
+_LIST_UPDATE_INTERVAL = 5.0
 
 
 def _prune_stale_categories():
@@ -382,10 +387,12 @@ async def run_download(
     state = _init_state(filename, path, file_size, event)
     if existing_message is not None:
         state.message = existing_message
-        handle_existing_lists_for_new_download(filename)
         msg = existing_message
     else:
         msg = await _send_start_message(event, state)
+
+    handle_existing_lists_for_new_download(filename)
+    await update_all_download_lists()
 
     # Send initial messages to watchers, register as mirror progress messages
     if watcher_events:
@@ -440,6 +447,14 @@ async def run_download(
                             tracked.message = new_mirror
                     except Exception:
                         pass
+        # Rate-limited download-list update (direct API — _tg_lock is held)
+        now = time.time()
+        if now - _list_update_ts["last"] >= _LIST_UPDATE_INTERVAL:
+            _list_update_ts["last"] = now
+            list_text, list_buttons = build_downloads_list(states)
+            for tracked in message_tracker.get_messages("__downloads_list__", MessageType.DOWNLOAD_LIST):
+                with contextlib.suppress(Exception):
+                    await tracked.message.edit(list_text, buttons=list_buttons)
         return r
 
     with contextlib.suppress(Exception):
@@ -456,6 +471,7 @@ async def run_download(
         await _handle_error(e, state, msg, filename, path)
     finally:
         _final_cleanup(filename)
+        await update_all_download_lists()
 
 
 def _init_state(filename: str, path: str, size: int, event: events.NewMessage.Event) -> DownloadState:
@@ -565,6 +581,7 @@ async def _queued_runner(client: TelegramClient, qi: QueuedItem) -> None:
     state = _init_state(qi.filename, qi.path, qi.size, qi.event)
     state.waiting_for_space = True
     handle_existing_lists_for_new_download(qi.filename)
+    await update_all_download_lists()
     try:
         ok, space_msg = await _ensure_disk_space(qi.event, qi.filename, qi.size, qi.path, existing_message=qi.message)
         if not ok or state.cancelled:
@@ -726,6 +743,8 @@ async def _start_direct_download(client: TelegramClient, event, document, filena
                 _final_cleanup(filename)
                 return
             st.waiting_for_space = True
+            handle_existing_lists_for_new_download(filename)
+            await update_all_download_lists()
             ok, space_msg = await _ensure_disk_space(event, filename, size, path)
             if not ok or st.cancelled:
                 _final_cleanup(filename)

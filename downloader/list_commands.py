@@ -219,11 +219,12 @@ def build_downloads_list(active_states):
         row_buttons = [Button.inline("📊 Info", data=f"info:{file_id}")]
         if state.waiting_for_space:
             row_buttons.append(Button.inline("🛑 Cancel", data=f"lcancel:{file_id}"))
-        elif state.paused:
-            row_buttons.append(Button.inline("▶️ Resume", data=f"resume:{file_id}"))
         else:
-            row_buttons.append(Button.inline("⏸️ Pause", data=f"pause:{file_id}"))
-        row_buttons.append(Button.inline("🛑 Cancel", data=f"lcancel:{file_id}"))
+            if state.paused:
+                row_buttons.append(Button.inline("▶️ Resume", data=f"resume:{file_id}"))
+            else:
+                row_buttons.append(Button.inline("⏸️ Pause", data=f"pause:{file_id}"))
+            row_buttons.append(Button.inline("🛑 Cancel", data=f"lcancel:{file_id}"))
         buttons.append(row_buttons)
 
     if len(lines) == 1:
@@ -258,6 +259,22 @@ def handle_existing_lists_for_new_download(filename: str):
             )
 
 
+async def update_all_download_lists():
+    """Edit every tracked /downloads list message with the current state."""
+    for tracked in message_tracker.get_messages("__downloads_list__", MessageType.DOWNLOAD_LIST):
+        try:
+            if states:
+                text, buttons = build_downloads_list(states)
+            else:
+                text = "📁 No active downloads"
+                buttons = [[Button.inline("🔄 Refresh", data="refresh_downloads")]]
+            new_msg = await throttle.edit_message(tracked.message, text, buttons=buttons)
+            if new_msg and new_msg is not tracked.message:
+                tracked.message = new_msg
+        except Exception:
+            pass
+
+
 def _register_noop_handler(client: TelegramClient):
     @client.on(events.CallbackQuery(pattern=b"no_action"))
     @throttle.serialized
@@ -271,4 +288,5 @@ __all__ = [
     "get_status_text",
     "handle_existing_lists_for_new_download",
     "register_list_handlers",
+    "update_all_download_lists",
 ]
