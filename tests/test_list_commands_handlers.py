@@ -104,7 +104,7 @@ def _handlers():
     """Register list handlers on a FakeClient and return the handler list.
 
     Order: [0] downloads, [1] queue, [2] refresh_downloads,
-           [3] refresh_queue, [4] info
+           [3] refresh_queue
     """
     client = FakeClient()
     register_list_handlers(client)
@@ -117,7 +117,7 @@ def _handlers():
 def test_register_list_handlers_registers_six_handlers():
     client = FakeClient()
     register_list_handlers(client)
-    assert len(client.handlers) == 5
+    assert len(client.handlers) == 4
 
 
 # ── _downloads handler (lines 26-56) ──
@@ -230,59 +230,7 @@ def test_refresh_queue_with_items(monkeypatch):
     assert any(a["text"] == "Refreshed" for a in answered)
 
 
-# ── _info callback + _handle_info_callback + _create_info_message (lines 120-156) ──
-
-
-def test_info_unknown_file_id(monkeypatch):
-    _, _, answered, _ = _setup(monkeypatch)
-    monkeypatch.setattr(lc, "resolve_file_id", lambda fid: None)
-    monkeypatch.setattr(lc, "states", {})
-    h = _handlers()
-    asyncio.run(h[4](FakeEvent(data=b"info:unknown")))
-    assert any("no longer active" in (a["text"] or "") for a in answered)
-
-
-def test_info_no_state_for_resolved_file(monkeypatch):
-    _, _, answered, _ = _setup(monkeypatch)
-    monkeypatch.setattr(lc, "resolve_file_id", lambda fid: "gone.mp4")
-    monkeypatch.setattr(lc, "states", {})
-    h = _handlers()
-    asyncio.run(h[4](FakeEvent(data=b"info:abc123")))
-    assert any("no longer active" in (a["text"] or "") for a in answered)
-
-
-def test_info_creates_progress_view(monkeypatch):
-    sent, _, answered, tracker = _setup(monkeypatch)
-    st = DownloadState("info.mp4", "/tmp/info.mp4", 1000)
-    st.update_progress(500, 50, "1 MB/s")
-    monkeypatch.setattr(lc, "resolve_file_id", lambda fid: "info.mp4")
-    monkeypatch.setattr(lc, "states", {"info.mp4": st})
-    h = _handlers()
-    asyncio.run(h[4](FakeEvent(data=b"info:abc")))
-    assert any("info.mp4" in s["text"] for s in sent)
-    assert any("Created progress view" in (a["text"] or "") for a in answered)
-    assert len(tracker.get_messages("info.mp4", MessageType.PROGRESS)) == 1
-
-
-def test_info_send_message_fails(monkeypatch):
-    sent, _, answered, tracker = _setup(monkeypatch)
-
-    async def failing_send(event, text, **kw):
-        sent.append({"text": text, **kw})
-        return None
-
-    monkeypatch.setattr(throttle, "send_message", failing_send)
-
-    st = DownloadState("fail.mp4", "/tmp/fail.mp4", 1000)
-    monkeypatch.setattr(lc, "resolve_file_id", lambda fid: "fail.mp4")
-    monkeypatch.setattr(lc, "states", {"fail.mp4": st})
-    h = _handlers()
-    asyncio.run(h[4](FakeEvent(data=b"info:abc")))
-    assert any("Failed" in (a["text"] or "") for a in answered)
-    assert len(tracker.get_messages("fail.mp4", MessageType.PROGRESS)) == 0
-
-
-# ── get_status_text (lines 159-167) ──
+# ── get_status_text ──
 
 
 def test_get_status_text_cancelled():
@@ -388,91 +336,12 @@ def test_build_downloads_list_waiting_for_space():
     st.waiting_for_space = True
     text, buttons = build_downloads_list({"space.mp4": st})
     assert "Waiting for space..." in text
-    # Only Info + Cancel buttons (no Pause/Resume)
+    # Only Cancel button (no Pause/Resume)
     row = buttons[0]
     labels = [b.text for b in row]
-    assert any("Info" in label for label in labels)
     assert any("Cancel" in label for label in labels)
     assert not any("Pause" in label for label in labels)
     assert not any("Resume" in label for label in labels)
-
-
-def test_info_waiting_for_space_with_pending_deletion(monkeypatch):
-    """Info on space-waiting download restores the deletion prompt and redirects pending.message."""
-    import downloader.state as state_mod
-
-    sent, _, answered, _tracker = _setup(monkeypatch)
-    st = DownloadState("wait.mp4", "/tmp/wait.mp4", 1000)
-    st.waiting_for_space = True
-    monkeypatch.setattr(lc, "resolve_file_id", lambda fid: "wait.mp4")
-    monkeypatch.setattr(lc, "states", {"wait.mp4": st})
-
-    # Create a pending deletion for this file
-    async def _run():
-        from downloader.state import PendingDeletion
-
-        pd = PendingDeletion(filename="wait.mp4", candidate="old_movie.mkv")
-        original_msg = pd.message
-        state_mod.pending_deletions["testpid"] = pd
-        try:
-            h = _handlers()
-            await h[4](FakeEvent(data=b"info:abc"))
-            # pending.message should now point to the sent message (not original)
-            assert pd.message is not original_msg
-        finally:
-            state_mod.pending_deletions.pop("testpid", None)
-
-    asyncio.run(_run())
-    # Should send a message with deletion prompt text
-    assert any("old_movie.mkv" in s["text"] for s in sent)
-    assert any("Waiting for space" in s["text"] for s in sent)
-    assert any("Space prompt restored" in (a["text"] or "") for a in answered)
-
-
-def test_info_waiting_for_space_no_pending_deletion(monkeypatch):
-    """Info on space-waiting download with no pending deletion shows checking message."""
-    import downloader.state as state_mod
-
-    sent, _, _answered, _ = _setup(monkeypatch)
-    st = DownloadState("wait2.mp4", "/tmp/wait2.mp4", 1000)
-    st.waiting_for_space = True
-    monkeypatch.setattr(lc, "resolve_file_id", lambda fid: "wait2.mp4")
-    monkeypatch.setattr(lc, "states", {"wait2.mp4": st})
-    # Ensure no pending deletions
-    orig = dict(state_mod.pending_deletions)
-    state_mod.pending_deletions.clear()
-    try:
-        h = _handlers()
-        asyncio.run(h[4](FakeEvent(data=b"info:xyz")))
-    finally:
-        state_mod.pending_deletions.update(orig)
-    assert any("Checking disk space" in s["text"] for s in sent)
-
-
-def test_info_waiting_for_space_send_fails(monkeypatch):
-    """Info on space-waiting download gracefully handles send failure."""
-    import downloader.state as state_mod
-
-    sent, _, answered, _ = _setup(monkeypatch)
-
-    async def failing_send(event, text, **kw):
-        sent.append({"text": text, **kw})
-        return None
-
-    monkeypatch.setattr(throttle, "send_message", failing_send)
-
-    st = DownloadState("fail.mp4", "/tmp/fail.mp4", 1000)
-    st.waiting_for_space = True
-    monkeypatch.setattr(lc, "resolve_file_id", lambda fid: "fail.mp4")
-    monkeypatch.setattr(lc, "states", {"fail.mp4": st})
-    orig = dict(state_mod.pending_deletions)
-    state_mod.pending_deletions.clear()
-    try:
-        h = _handlers()
-        asyncio.run(h[4](FakeEvent(data=b"info:abc")))
-    finally:
-        state_mod.pending_deletions.update(orig)
-    assert any("Failed" in (a["text"] or "") for a in answered)
 
 
 # ── update_all_download_lists ──
