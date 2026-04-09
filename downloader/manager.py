@@ -84,11 +84,22 @@ def _spawn(coro: Any) -> None:
 
 
 async def _periodic_list_updater():
-    """Periodically update all tracked download list messages."""
+    """Periodically update all tracked download list messages.
+
+    This is the ONLY background caller of ``update_all_lists()``.  It
+    acquires ``handler_lock`` so the ``cl.confirming`` check inside
+    ``update_all_lists`` is always atomic with handler-triggered edits.
+
+    Progress ticks are naturally batched: no matter how many arrive in
+    five seconds, only one Telegram edit happens per tracked list.
+    """
+    was_active = False
     while True:
         await asyncio.sleep(_LIST_UPDATE_INTERVAL)
-        if not any(not s.cancelled and not s.completed for s in states.values()):
+        has_work = any(not s.cancelled and not s.completed for s in states.values()) or bool(queue.items)
+        if not has_work and not was_active:
             continue
+        was_active = has_work
         async with throttle.handler_lock:
             with contextlib.suppress(Exception):
                 await update_all_lists()
@@ -344,8 +355,6 @@ async def run_download(
 
     await kodi.notify("Download Started", filename)
     log.info("Start download %s (%s)", filename, utils.humanize_size(file_size))
-    async with throttle.handler_lock:
-        await update_all_lists()
 
     progress_cb = create_progress_callback(filename, time.time(), RateLimiter(), state)
     source_msg = getattr(event, "message", None)
@@ -359,8 +368,6 @@ async def run_download(
         await _handle_error(e, state, filename, path, event)
     finally:
         _final_cleanup(filename)
-        async with throttle.handler_lock:
-            await update_all_lists()
 
 
 def _init_state(filename: str, path: str, size: int, event: events.NewMessage.Event) -> DownloadState:
@@ -449,8 +456,6 @@ async def _queued_runner(client: TelegramClient, qi: QueuedItem) -> None:
     """Runner for queued downloads: registers state for visibility, checks space, then downloads."""
     state = _init_state(qi.filename, qi.path, qi.size, qi.event)
     state.waiting_for_space = True
-    async with throttle.handler_lock:
-        await update_all_lists()
     try:
         ok, _space_msg = await _ensure_disk_space(qi.event, qi.filename, qi.size, qi.path)
         if not ok or state.cancelled:
@@ -528,7 +533,6 @@ async def _start_direct_download(client: TelegramClient, event, document, filena
                 _final_cleanup(filename)
                 return
             st.waiting_for_space = True
-            await update_all_lists()
             ok, _space_msg = await _ensure_disk_space(event, filename, size, path)
             if not ok or st.cancelled:
                 _final_cleanup(filename)

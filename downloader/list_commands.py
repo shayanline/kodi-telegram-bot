@@ -273,7 +273,7 @@ def _register_pause_resume(client: TelegramClient):
                 return
             st.mark_resumed()
             await throttle.answer_callback(event, "Resuming")
-        await _refresh_caller_list(event)
+        await update_all_lists()
 
 
 def _register_cancel(client: TelegramClient):
@@ -328,13 +328,13 @@ def _register_cancel_confirm(client: TelegramClient):
                     st.mark_cancelled()
                     _unblock_pending_deletion(filename)
                     await throttle.answer_callback(event, "Cancelling")
-                    await _refresh_caller_list(event)
+                    await update_all_lists()
                     return
             await throttle.answer_callback(event, _NOT_FOUND, alert=False)
         else:
             await throttle.answer_callback(event)
 
-        await _refresh_caller_list(event)
+        await update_all_lists()
 
 
 def _register_qcancel(client: TelegramClient):
@@ -408,7 +408,6 @@ def _register_qcancel_confirm(client: TelegramClient):
                 if queue.cancel(filename):
                     file_id_map.pop(file_id, None)
                     await throttle.answer_callback(event, "Cancelled")
-                    await _refresh_caller_list(event)
                     await update_all_lists()
                     return
                 # May have started — cancel active
@@ -417,13 +416,13 @@ def _register_qcancel_confirm(client: TelegramClient):
                     st.mark_cancelled()
                     _unblock_pending_deletion(filename)
                     await throttle.answer_callback(event, "Cancelling")
-                    await _refresh_caller_list(event)
+                    await update_all_lists()
                     return
             await throttle.answer_callback(event, _NOT_FOUND, alert=False)
         else:
             await throttle.answer_callback(event)
 
-        await _refresh_caller_list(event)
+        await update_all_lists()
 
 
 def _register_cancel_all(client: TelegramClient):
@@ -477,7 +476,7 @@ def _register_cancel_all_confirm(client: TelegramClient):
             log.info("Cancel-all: cancelled %d downloads", cancelled)
         else:
             await throttle.answer_callback(event)
-        await _refresh_caller_list(event)
+        await update_all_lists()
 
 
 def _unblock_pending_deletion(filename: str) -> None:
@@ -489,15 +488,6 @@ def _unblock_pending_deletion(filename: str) -> None:
             pending.choice = "no"
             with contextlib.suppress(Exception):
                 pending.future.set_result(True)
-
-
-async def _refresh_caller_list(event) -> None:
-    """Refresh the list message for the chat that triggered the callback."""
-    chat_id = event.chat_id or event.sender_id or 0
-    cl = chat_lists.get(chat_id)
-    page = cl.page if cl else 0
-    text, buttons = build_unified_list(page)
-    await throttle.edit_message(event, text, buttons=buttons)
 
 
 __all__ = [
