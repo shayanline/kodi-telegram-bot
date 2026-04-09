@@ -56,11 +56,22 @@ These are non-negotiable. Every change must follow them:
 6. **Cleaner code is better.** Readable names, consistent style, small
    functions with single responsibilities. Code should be obvious at a glance.
 
+## Setup
+
+After cloning, install dependencies and activate pre-commit hooks:
+
+```bash
+uv sync
+uv run pre-commit install
+```
+
 ## Formatting & Linting
 
-This project uses **ruff** for both linting and formatting.
+This project uses **ruff** for both linting and formatting. Pre-commit hooks
+run `ruff check --fix` and `ruff format` automatically on every commit, so
+staged files are always linted and formatted before they land.
 
-### Before every commit, run:
+To run manually:
 
 ```bash
 ruff check --fix .      # lint and auto-fix
