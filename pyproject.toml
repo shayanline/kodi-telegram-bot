@@ -3,7 +3,7 @@ name = "kodi-telegram-bot"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "telethon==1.42.0",
+    "telethon==1.43.0",
     "requests==2.33.1",
     "psutil==7.2.2",
     "python-dotenv==1.2.2",
