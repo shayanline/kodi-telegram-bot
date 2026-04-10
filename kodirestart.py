@@ -19,7 +19,7 @@ from logger import log
 _SETUP_MSG = (
     "⚙️ **Kodi restart is not configured.**\n\n"
     "Set `KODI_START_CMD` in your `.env` file to the command that starts Kodi.\n"
-    "Example: `KODI_START_CMD=systemctl start cec-kodi-launcher.service`"
+    "Example: `KODI_START_CMD=sudo systemctl start kodi`"
 )
 
 _EXIT_POLL_INTERVAL = 1

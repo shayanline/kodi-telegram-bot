@@ -91,7 +91,7 @@ Copy `.env.example` to `.env` and fill in the values. The three Telegram variabl
 | `KODI_URL` | `http://localhost:8080/jsonrpc` | Kodi JSON RPC endpoint |
 | `KODI_USERNAME` | `kodi` | Kodi HTTP username |
 | `KODI_PASSWORD` | *(blank)* | Kodi HTTP password |
-| `KODI_START_CMD` | *(blank)* | Shell command to start Kodi. Required for `/restart_kodi`. Example: `systemctl start cec-kodi-launcher.service` |
+| `KODI_START_CMD` | *(blank)* | Shell command to start Kodi. Required for `/restart_kodi`. Example: `sudo systemctl start kodi` (see [Raspberry Pi Setup](#raspberry-pi-setup) for sudoers config) |
 | `DOWNLOAD_DIR` | `~/Downloads` | Storage root, created if missing |
 | `ORGANIZE_MEDIA` | `1` | `1` to sort into Movies/Series/Other, `0` for flat storage |
 | `MAX_RETRY_ATTEMPTS` | `3` | Retry count per download on transient errors |
@@ -218,34 +218,55 @@ No extra configuration needed. The file manager works with whatever `DOWNLOAD_DI
 
 ## Raspberry Pi Setup
 
-The bot is optimized for Raspberry Pi 3 or later. This section walks through a production friendly setup.
+The bot is optimized for Raspberry Pi 3 or later. The quickest way to get
+running is the interactive setup script.
 
-### Install Dependencies
+### Automated Setup
+
+```sh
+git clone https://github.com/shemekhe/kodi-telegram-bot.git
+cd kodi-telegram-bot
+./setup.sh
+```
+
+The script installs dependencies, creates a `.env` through guided prompts, and
+sets up a systemd user service that starts on boot. It is safe to re-run — an
+existing `.env` can be merged, overwritten, or skipped.
+
+To update an existing installation later:
+
+```sh
+./setup.sh --update
+```
+
+### Manual Setup
+
+If you prefer to set things up yourself, follow the steps below.
+
+#### Install Dependencies
 
 ```sh
 sudo apt update
 sudo apt install -y python3 git
-```
-
-### Install uv
-
-```sh
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-### Clone and Install
+#### Clone and Install
 
 ```sh
-cd /home/pi
+cd ~
 git clone https://github.com/shemekhe/kodi-telegram-bot.git
 cd kodi-telegram-bot
 uv sync
 cp .env.example .env  # then edit .env with your values
 ```
 
-### Create a systemd Service
+#### Create a systemd User Service
 
-Create the service file at `/etc/systemd/system/kodi-telegram-bot.service`:
+User services run without root and let the bot manage other user services
+(like a Kodi launcher) without permission issues.
+
+Create the service file at `~/.config/systemd/user/kodi-telegram-bot.service`:
 
 ```ini
 [Unit]
@@ -255,50 +276,59 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=pi
-WorkingDirectory=/home/pi/kodi-telegram-bot
+WorkingDirectory=%h/kodi-telegram-bot
 Environment=PYTHONUNBUFFERED=1
-EnvironmentFile=/home/pi/kodi-telegram-bot/.env
-ExecStart=/home/pi/kodi-telegram-bot/.venv/bin/python main.py
+EnvironmentFile=%h/kodi-telegram-bot/.env
+ExecStart=%h/kodi-telegram-bot/.venv/bin/python main.py
 Restart=on-failure
 RestartSec=5
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=full
-ProtectHome=false
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
 ```
 
-Then enable and start it:
+Enable linger so the service starts at boot without requiring a login session,
+then enable and start the bot:
 
 ```sh
-sudo systemctl daemon-reload
-sudo systemctl enable kodi-telegram-bot
-sudo systemctl start kodi-telegram-bot
+sudo loginctl enable-linger $USER    # one-time, requires sudo
+systemctl --user daemon-reload
+systemctl --user enable kodi-telegram-bot
+systemctl --user start kodi-telegram-bot
 ```
 
-### Logs and Maintenance
+#### Kodi Restart Permissions
+
+If `KODI_START_CMD` uses `sudo` (for example `sudo systemctl start kodi`), the bot needs passwordless sudo for that specific command. Create a sudoers rule:
 
 ```sh
-journalctl -u kodi-telegram-bot -f    # live logs
-sudo systemctl restart kodi-telegram-bot
-sudo systemctl status kodi-telegram-bot
+echo "$USER ALL=(ALL) NOPASSWD: /usr/bin/systemctl start kodi" \
+  | sudo tee /etc/sudoers.d/kodi-bot
+sudo chmod 0440 /etc/sudoers.d/kodi-bot
+```
+
+Replace `kodi` with your actual service name. The setup script handles this automatically.
+
+#### Logs and Maintenance
+
+```sh
+journalctl --user -u kodi-telegram-bot -f    # live logs
+systemctl --user restart kodi-telegram-bot
+systemctl --user status kodi-telegram-bot
 ```
 
 To update to the latest version:
 
 ```sh
-cd /home/pi/kodi-telegram-bot
+cd ~/kodi-telegram-bot
 git pull
 uv sync
-sudo systemctl restart kodi-telegram-bot
+systemctl --user restart kodi-telegram-bot
 ```
 
 ### Storage Tips
 
-For large media collections, point `DOWNLOAD_DIR` to an external drive (for example `/mnt/media`). Make sure the `pi` user has write permissions on that path. Monitor available space with `df -h`.
+For large media collections, point `DOWNLOAD_DIR` to an external drive (for example `/mnt/media`). Make sure your user has write permissions on that path. Monitor available space with `df -h`.
 
 ## Contributing
 
