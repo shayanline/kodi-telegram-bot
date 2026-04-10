@@ -77,7 +77,7 @@ cp .env.example .env      # then edit .env with your values
 uv run python main.py
 ```
 
-Send the bot a video or audio file in a private chat. Use `/status` at any time to check progress.
+Send the bot a video or audio file in a private chat. Use `/downloads` at any time to check progress.
 
 ## Configuration
 
@@ -117,9 +117,7 @@ Start the bot with `uv run python main.py`. It only responds to private messages
 | Command | What it does |
 |---------|-------------|
 | `/start` | Shows help text |
-| `/status` | Lists active and queued downloads |
 | `/downloads` | Detailed active downloads list |
-| `/queue` | Detailed queued downloads list |
 | `/files` | Browse and manage downloaded files |
 | `/kodi` | Interactive remote control for Kodi |
 | `/restart_kodi` | Quit and restart Kodi (requires `KODI_START_CMD`) |
@@ -158,7 +156,7 @@ Set `ORGANIZE_MEDIA=0` to store all files flat under `DOWNLOAD_DIR`.
 
 ### Concurrency and Queue
 
-The bot downloads up to `MAX_CONCURRENT_DOWNLOADS` files at once. Any additional files are placed in a FIFO queue. Use `/status` to see what is active and what is waiting.
+The bot downloads up to `MAX_CONCURRENT_DOWNLOADS` files at once. Any additional files are placed in a FIFO queue. Use `/downloads` to see what is active and what is waiting.
 
 ### Restart Behavior
 
