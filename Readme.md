@@ -45,9 +45,9 @@ Built to be tiny, readable, and Raspberry Pi friendly.
 
 You will need three things before running the bot.
 
-### Python 3.11 or later
+### Python 3.11 (can work with newer versions, but not tested)
 
-Any system with Python 3.11+ will work. Tested on 3.12. A Raspberry Pi 3 or newer is a great fit.
+Any system with Python 3.11+ will work. Tested on 3.11. A Raspberry Pi 3 or newer is a great fit.
 
 ### Telegram API Credentials
 
