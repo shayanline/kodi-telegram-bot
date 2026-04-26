@@ -14,6 +14,7 @@ config.py          → env loading & validation
 utils.py           → media detection, disk/memory helpers
 kodi.py            → thin JSON-RPC wrapper (notify / play / status / controls / volume / input)
 organizer.py       → filename parsing, categorization & final path builder
+tmdb.py            → TMDB API helper for resolving TV show IDs
 filemanager.py     → interactive file browser & deletion via Telegram
 kodiremote.py      → Kodi remote control UI via inline buttons (/kodi)
 kodirestart.py     → /restart_kodi command with confirmation prompt

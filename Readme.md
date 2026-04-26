@@ -94,6 +94,7 @@ Copy `.env.example` to `.env` and fill in the values. The three Telegram variabl
 | `KODI_START_CMD` | *(blank)* | Shell command to start Kodi. Required for `/restart_kodi`. Example: `sudo systemctl start kodi` (see [Raspberry Pi Setup](#raspberry-pi-setup) for sudoers config) |
 | `DOWNLOAD_DIR` | `~/Downloads` | Storage root, created if missing |
 | `ORGANIZE_MEDIA` | `1` | `1` to sort into Movies/Series/Other, `0` for flat storage |
+| `TMDB_API_KEY` | *(blank)* | Free API key from [TMDB](https://www.themoviedb.org/settings/api). Enables accurate `tvshow.nfo` generation so Kodi never merges different shows |
 | `MAX_RETRY_ATTEMPTS` | `3` | Retry count per download on transient errors |
 | `MAX_CONCURRENT_DOWNLOADS` | `5` | Number of parallel download slots |
 | `MIN_FREE_DISK_MB` | `200` | Hard floor for free space after a download completes |
@@ -152,6 +153,8 @@ Other/
 
 The parser detects season/episode tokens like `S02E06`, year tokens like `(2024)`, and strips common quality and codec tags (1080p, WEB DL, x265, etc.). If the classification is ambiguous, the bot shows inline buttons so you can choose Movie, Series, or Other without uploading again.
 
+Each series folder gets a `tvshow.nfo` file so Kodi's library scraper can identify the show. When `TMDB_API_KEY` is set, the NFO includes a TMDB URL that the scraper resolves directly, preventing different shows from being merged into one library entry. Without the key the bot still writes a basic NFO, but Kodi may fall back to an unreliable title search.
+
 Set `ORGANIZE_MEDIA=0` to store all files flat under `DOWNLOAD_DIR`.
 
 ### Concurrency and Queue
@@ -172,6 +175,7 @@ kodi.py              thin JSON RPC wrapper (notify, play, status)
 kodiremote.py        interactive remote control via inline buttons
 kodirestart.py       /restart_kodi command with confirmation
 organizer.py         filename parsing, categorization, final path builder
+tmdb.py              TMDB API helper for resolving TV show IDs
 filemanager.py       interactive file browser and deletion via Telegram
 logger.py            truncating file logger with size cap
 downloader/
@@ -353,6 +357,7 @@ Pull requests and small improvements are welcome.
 | Stuck in queue | The concurrency limit has been reached. Wait for a slot or raise the limit. |
 | Always low on space | Increase `MIN_FREE_DISK_MB` or clean the download directory manually. |
 | Memory warnings | Set `MEMORY_WARNING_PERCENT=0` to disable Kodi high-memory notifications. |
+| Kodi merges TV shows | Set `TMDB_API_KEY` in `.env` so the bot writes accurate `tvshow.nfo` files. Then clean and rescan the library in Kodi. |
 
 ## License
 
