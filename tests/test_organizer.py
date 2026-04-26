@@ -90,6 +90,46 @@ def test_build_final_path_series(monkeypatch):
         assert os.path.exists(os.path.dirname(path))
 
 
+def test_build_final_path_series_creates_tvshow_nfo(monkeypatch):
+    with tempfile.TemporaryDirectory() as td:
+        monkeypatch.setattr(config, "DOWNLOAD_DIR", td)
+        monkeypatch.setattr(config, "ORGANIZE_MEDIA", True)
+        build_final_path("Criminal.Minds.2005.S01E01.720p.mkv", base_dir=td)
+        nfo = os.path.join(td, config.SERIES_DIR_NAME, "Criminal Minds (2005)", "tvshow.nfo")
+        assert os.path.exists(nfo)
+        with open(nfo) as f:
+            content = f.read()
+        assert "<title>Criminal Minds</title>" in content
+        assert "<year>2005</year>" in content
+
+
+def test_tvshow_nfo_not_overwritten(monkeypatch):
+    with tempfile.TemporaryDirectory() as td:
+        monkeypatch.setattr(config, "DOWNLOAD_DIR", td)
+        monkeypatch.setattr(config, "ORGANIZE_MEDIA", True)
+        build_final_path("Show.S01E01.720p.mkv", base_dir=td)
+        nfo = os.path.join(td, config.SERIES_DIR_NAME, "Show", "tvshow.nfo")
+        # Write custom content and verify a second download doesn't overwrite it
+        with open(nfo, "w") as f:
+            f.write("custom")
+        build_final_path("Show.S01E02.720p.mkv", base_dir=td)
+        with open(nfo) as f:
+            assert f.read() == "custom"
+
+
+def test_tvshow_nfo_without_year(monkeypatch):
+    with tempfile.TemporaryDirectory() as td:
+        monkeypatch.setattr(config, "DOWNLOAD_DIR", td)
+        monkeypatch.setattr(config, "ORGANIZE_MEDIA", True)
+        build_final_path("Love.Island.S11E01.720p.mkv", base_dir=td)
+        nfo = os.path.join(td, config.SERIES_DIR_NAME, "Love Island", "tvshow.nfo")
+        assert os.path.exists(nfo)
+        with open(nfo) as f:
+            content = f.read()
+        assert "<title>Love Island</title>" in content
+        assert "<year>" not in content
+
+
 def test_build_final_path_other(monkeypatch):
     with tempfile.TemporaryDirectory() as td:
         monkeypatch.setattr(config, "DOWNLOAD_DIR", td)

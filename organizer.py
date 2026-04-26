@@ -237,6 +237,20 @@ def _strip_edition_tokens(tokens: list[str]) -> list[str]:
     return [t for t in tokens if t.lower() not in _EDITION_TAGS]
 
 
+_TVSHOW_NFO_TEMPLATE = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<tvshow>\n    <title>{title}</title>\n{year_line}</tvshow>\n'
+
+
+def _ensure_tvshow_nfo(show_dir: str, title: str, year: int | None) -> None:
+    """Write a tvshow.nfo in *show_dir* if one does not already exist."""
+    nfo_path = os.path.join(show_dir, "tvshow.nfo")
+    if os.path.exists(nfo_path):
+        return
+    year_line = f"    <year>{year}</year>\n" if year else ""
+    content = _TVSHOW_NFO_TEMPLATE.format(title=title, year_line=year_line)
+    with open(nfo_path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+
 _MOVIE_LINE_RE = re.compile(r"^🎬\s+(.+?)\s*\((\d{4})\)\s*$")
 _SERIES_HEADER_RE = re.compile(r"^🎬\s+سریال\s+(.+?)\s+محصول سال\s+(\d{4})\s*$")
 _SERIES_EP_RE = re.compile(r"^📁\s+فصل\s+(\d{1,2})\s+قسمت\s+(\d{1,3})\s*$")
@@ -358,9 +372,11 @@ def build_final_path(
     if parsed.category == "series" and parsed.normalized_stem:
         series_root = os.path.join(base_dir, config.SERIES_DIR_NAME)
         show_folder = parsed.title if not parsed.year else f"{parsed.title} ({parsed.year})"
+        show_dir = os.path.join(series_root, show_folder)
         season_folder = f"Season {parsed.season}" if parsed.season is not None else "Season 1"
-        final_dir = os.path.join(series_root, show_folder, season_folder)
+        final_dir = os.path.join(show_dir, season_folder)
         os.makedirs(final_dir, exist_ok=True)
+        _ensure_tvshow_nfo(show_dir, parsed.title, parsed.year)
         final_name = f"{parsed.normalized_stem}{ext}"
         return os.path.join(final_dir, final_name), final_name
 
