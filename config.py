@@ -69,6 +69,11 @@ OTHER_DIR_NAME: str = "Other"
 
 KODI_START_CMD: str = os.getenv("KODI_START_CMD", "").strip()
 
+# Optional TMDB API key for resolving show IDs in tvshow.nfo files.
+# Without this, Kodi may merge different shows. Get a free key at
+# https://www.themoviedb.org/settings/api
+TMDB_API_KEY: str = os.getenv("TMDB_API_KEY", "").strip()
+
 MAX_RETRY_ATTEMPTS: int = _env_int("MAX_RETRY_ATTEMPTS", 3)
 MAX_CONCURRENT_DOWNLOADS: int = _env_int("MAX_CONCURRENT_DOWNLOADS", 5)
 MIN_FREE_DISK_MB: int = _env_int("MIN_FREE_DISK_MB", 200)
@@ -113,6 +118,7 @@ __all__ = [
     "ORGANIZE_MEDIA",
     "OTHER_DIR_NAME",
     "SERIES_DIR_NAME",
+    "TMDB_API_KEY",
     "is_user_allowed",
     "validate",
 ]

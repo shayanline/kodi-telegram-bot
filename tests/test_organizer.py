@@ -90,7 +90,8 @@ def test_build_final_path_series(monkeypatch):
         assert os.path.exists(os.path.dirname(path))
 
 
-def test_build_final_path_series_creates_tvshow_nfo(monkeypatch):
+def test_build_final_path_series_creates_tvshow_nfo_fallback(monkeypatch):
+    """Without tmdb_id the NFO falls back to a title-only XML stub."""
     with tempfile.TemporaryDirectory() as td:
         monkeypatch.setattr(config, "DOWNLOAD_DIR", td)
         monkeypatch.setattr(config, "ORGANIZE_MEDIA", True)
@@ -100,7 +101,18 @@ def test_build_final_path_series_creates_tvshow_nfo(monkeypatch):
         with open(nfo) as f:
             content = f.read()
         assert "<title>Criminal Minds</title>" in content
-        assert "<year>2005</year>" in content
+
+
+def test_build_final_path_series_creates_tmdb_nfo(monkeypatch):
+    """With tmdb_id the NFO contains a TMDB URL for the scraper."""
+    with tempfile.TemporaryDirectory() as td:
+        monkeypatch.setattr(config, "DOWNLOAD_DIR", td)
+        monkeypatch.setattr(config, "ORGANIZE_MEDIA", True)
+        build_final_path("Criminal.Minds.2005.S01E01.720p.mkv", base_dir=td, tmdb_id=4057)
+        nfo = os.path.join(td, config.SERIES_DIR_NAME, "Criminal Minds (2005)", "tvshow.nfo")
+        with open(nfo) as f:
+            content = f.read()
+        assert "https://www.themoviedb.org/tv/4057" in content
 
 
 def test_tvshow_nfo_not_overwritten(monkeypatch):
@@ -127,7 +139,6 @@ def test_tvshow_nfo_without_year(monkeypatch):
         with open(nfo) as f:
             content = f.read()
         assert "<title>Love Island</title>" in content
-        assert "<year>" not in content
 
 
 def test_build_final_path_other(monkeypatch):

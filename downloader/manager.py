@@ -14,6 +14,7 @@ from telethon.tl.types import Document, ReplyInlineMarkup
 import config
 import kodi
 import throttle
+import tmdb
 import utils
 from logger import log
 from organizer import build_final_path, parse_filename
@@ -559,9 +560,14 @@ def _register_download_handler(client: TelegramClient):
         _prune_stale_categories()
         original_filename = filename_for_document(document)
         parsed = parse_filename(original_filename, text=(event.raw_text or None))
+        tmdb_id = None
+        if parsed.category == "series":
+            tmdb_id = await tmdb.search_show(parsed.title, parsed.year)
         ambiguous = parsed.category == "other" and parsed.year is not None
         if not ambiguous or not config.ORGANIZE_MEDIA:
-            _path_tmp, normalized_name = build_final_path(original_filename, text=(event.raw_text or None))
+            _path_tmp, normalized_name = build_final_path(
+                original_filename, text=(event.raw_text or None), tmdb_id=tmdb_id
+            )
             lookup_name = normalized_name
         else:
             lookup_name = original_filename
@@ -687,7 +693,11 @@ def _register_category_selection(client: TelegramClient):
         if not forced:
             await throttle.answer_callback(event, "Unknown", alert=False)
             return
-        path, final_name = build_final_path(filename, forced_category=forced)
+        cat_tmdb_id = None
+        if forced == "series":
+            cat_parsed = parse_filename(filename)
+            cat_tmdb_id = await tmdb.search_show(cat_parsed.title, cat_parsed.year)
+        path, final_name = build_final_path(filename, forced_category=forced, tmdb_id=cat_tmdb_id)
         direct_download = None
         async with _download_lock:
             if states.get(final_name) or queue.items.get(final_name):

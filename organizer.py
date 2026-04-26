@@ -237,16 +237,22 @@ def _strip_edition_tokens(tokens: list[str]) -> list[str]:
     return [t for t in tokens if t.lower() not in _EDITION_TAGS]
 
 
-_TVSHOW_NFO_TEMPLATE = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<tvshow>\n    <title>{title}</title>\n{year_line}</tvshow>\n'
+_TMDB_URL = "https://www.themoviedb.org/tv/{tmdb_id}"
 
 
-def _ensure_tvshow_nfo(show_dir: str, title: str, year: int | None) -> None:
-    """Write a tvshow.nfo in *show_dir* if one does not already exist."""
+def _ensure_tvshow_nfo(show_dir: str, title: str, year: int | None, tmdb_id: int | None = None) -> None:
+    """Write a tvshow.nfo in *show_dir* if one does not already exist.
+
+    When *tmdb_id* is provided the NFO contains a TMDB URL that Kodi's
+    scraper can parse to uniquely identify the show, preventing merges.
+    """
     nfo_path = os.path.join(show_dir, "tvshow.nfo")
     if os.path.exists(nfo_path):
         return
-    year_line = f"    <year>{year}</year>\n" if year else ""
-    content = _TVSHOW_NFO_TEMPLATE.format(title=title, year_line=year_line)
+    if tmdb_id:
+        content = _TMDB_URL.format(tmdb_id=tmdb_id) + "\n"
+    else:
+        content = f"<tvshow>\n    <title>{title}</title>\n</tvshow>\n"
     with open(nfo_path, "w", encoding="utf-8") as f:
         f.write(content)
 
@@ -338,7 +344,11 @@ def parse_filename(filename: str, text: str | None = None) -> ParsedMedia:
 
 
 def build_final_path(
-    filename: str, base_dir: str | None = None, forced_category: str | None = None, text: str | None = None
+    filename: str,
+    base_dir: str | None = None,
+    forced_category: str | None = None,
+    text: str | None = None,
+    tmdb_id: int | None = None,
 ) -> tuple[str, str]:
     """Return (final_path, final_filename).
 
@@ -376,7 +386,7 @@ def build_final_path(
         season_folder = f"Season {parsed.season}" if parsed.season is not None else "Season 1"
         final_dir = os.path.join(show_dir, season_folder)
         os.makedirs(final_dir, exist_ok=True)
-        _ensure_tvshow_nfo(show_dir, parsed.title, parsed.year)
+        _ensure_tvshow_nfo(show_dir, parsed.title, parsed.year, tmdb_id)
         final_name = f"{parsed.normalized_stem}{ext}"
         return os.path.join(final_dir, final_name), final_name
 
