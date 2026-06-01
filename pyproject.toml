@@ -9,7 +9,7 @@ dependencies = [
     "python-dotenv==1.2.2",
     "cryptg==0.6.0",
     "pillow==12.2.0",
-    "aiohttp==3.13.5",
+    "aiohttp==3.14.0",
     "hachoir==3.3.0",
 ]
 
