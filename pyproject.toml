@@ -17,7 +17,7 @@ dependencies = [
 dev = [
     "pytest==9.1.1",
     "pytest-cov==7.1.0",
-    "mypy==1.20.2",
+    "mypy==2.3.1",
     "ruff==0.16.5",
     "types-requests==2.33.0.20260712",
     "pre-commit==4.6.2",
