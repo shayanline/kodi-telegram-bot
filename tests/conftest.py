@@ -23,3 +23,11 @@ def _patch_throttle_for_tests(monkeypatch):
         return await fn(*args, **kwargs)
 
     monkeypatch.setattr(throttle, "_enqueue", _direct_enqueue)
+
+
+def button_data(button) -> str:
+    """Callback data of an inline button, decoded.
+
+    Telethon 1.45 (layer 229) nests callback data under ``button.type``.
+    """
+    return button.type.data.decode()
