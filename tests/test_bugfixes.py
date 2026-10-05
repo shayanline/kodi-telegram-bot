@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 
+from conftest import button_data
+
 import config
 from downloader.ids import get_file_id
 from downloader.manager import _current_reserved_bytes, _init_state, _start_direct_download
@@ -101,10 +103,10 @@ def test_render_root_callback_data(tmp_path, monkeypatch):
     try:
         _text, buttons = _render_root()
         # Flatten all button data (exclude refresh button)
-        all_data = [btn.data for row in buttons for btn in row if hasattr(btn, "data")]
-        entry_data = [d for d in all_data if d != b"f:r"]
-        has_nav = any(d.startswith(b"f:n:") for d in entry_data)
-        has_info = any(d.startswith(b"f:i:") for d in entry_data)
+        all_data = [button_data(btn) for row in buttons for btn in row]
+        entry_data = [d for d in all_data if d != "f:r"]
+        has_nav = any(d.startswith("f:n:") for d in entry_data)
+        has_info = any(d.startswith("f:i:") for d in entry_data)
         assert has_nav, "directory should produce f:n: callback data"
         assert has_info, "file should produce f:i: callback data"
     finally:

@@ -7,6 +7,8 @@ import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from conftest import button_data
+
 import filemanager
 
 
@@ -276,7 +278,7 @@ def test_render_dir_protected_shows_lock(tmp_path):
     with _patch_download_dir(tmp_path), patch.dict(filemanager.states, {"active.mkv": state}):
         _text, buttons = filemanager._render_dir("Movies", 1)
         # The delete row should have a lock button
-        all_data = [b.data.decode() if hasattr(b, "data") else "" for row in buttons for b in row]
+        all_data = [button_data(b) for row in buttons for b in row]
         assert "f:noop" in all_data
 
 
@@ -291,7 +293,7 @@ def test_render_file_normal(tmp_path):
         assert "Size" in text
         assert "Modified" in text
         # Should have delete + back buttons
-        all_data = [b.data.decode() if hasattr(b, "data") else "" for row in buttons for b in row]
+        all_data = [button_data(b) for row in buttons for b in row]
         assert any("f:d:" in d for d in all_data)
 
 
@@ -303,7 +305,7 @@ def test_render_file_protected(tmp_path):
         text, buttons = filemanager._render_file("active.mkv")
         assert "downloading" in text.lower()
         # No delete button
-        all_data = [b.data.decode() if hasattr(b, "data") else "" for row in buttons for b in row]
+        all_data = [button_data(b) for row in buttons for b in row]
         assert not any("f:d:" in d for d in all_data)
 
 
@@ -322,7 +324,7 @@ def test_render_delete_confirm_file(tmp_path):
         text, buttons = filemanager._render_delete_confirm("f.mkv")
         assert "Delete this file" in text
         assert "f.mkv" in text
-        all_data = [b.data.decode() if hasattr(b, "data") else "" for row in buttons for b in row]
+        all_data = [button_data(b) for row in buttons for b in row]
         assert any("f:y:" in d for d in all_data)
         assert any("f:x:" in d for d in all_data)
 
@@ -438,7 +440,7 @@ def test_render_dir_with_subdirs(tmp_path):
         assert "SubA" in text
         assert "SubB" in text
         # Nav row should have folder icons
-        nav_data = [b.data.decode() for b in buttons[0]]
+        nav_data = [button_data(b) for b in buttons[0]]
         assert all("f:n:" in d for d in nav_data)
 
 
@@ -451,7 +453,7 @@ def test_render_dir_back_to_root(tmp_path):
         _text, buttons = filemanager._render_dir("Top", 1)
         bottom_row = buttons[-1]
         back_btn = bottom_row[0]
-        assert back_btn.data == b"f:r:1:S"
+        assert button_data(back_btn) == "f:r:1:S"
 
 
 # ── Render file back to parent ──
@@ -461,12 +463,7 @@ def test_render_file_back_to_parent(tmp_path):
     _make_tree(tmp_path, {"Movies": {"video.mkv": 100}})
     with _patch_download_dir(tmp_path):
         _text, buttons = filemanager._render_file(os.path.join("Movies", "video.mkv"))
-        back_data = [
-            b.data.decode()
-            for row in buttons
-            for b in row
-            if b"Back" in (b.text.encode() if hasattr(b, "text") else b"")
-        ]
+        back_data = [button_data(b) for row in buttons for b in row if "Back" in b.text]
         assert all("f:n:" in d for d in back_data)
 
 
@@ -477,7 +474,7 @@ def test_delete_confirm_buttons_present(tmp_path):
     _make_tree(tmp_path, {"target.mkv": 200})
     with _patch_download_dir(tmp_path):
         _text, buttons = filemanager._render_delete_confirm("target.mkv")
-        all_data = [b.data.decode() for row in buttons for b in row]
+        all_data = [button_data(b) for row in buttons for b in row]
         assert any("f:y:" in d for d in all_data)
         assert any("f:x:" in d for d in all_data)
 
@@ -610,7 +607,7 @@ def test_sort_row_marks_active():
 
 def test_sort_row_callback_data():
     row = filemanager._sort_row("S", "f:r:1:")
-    data = [b.data.decode() for b in row]
+    data = [button_data(b) for b in row]
     assert "f:r:1:S" in data
     assert "f:r:1:N" in data
     assert "f:r:1:D" in data
@@ -640,7 +637,7 @@ def test_render_root_has_sort_buttons(tmp_path):
     _make_tree(tmp_path, {"a.txt": 10})
     with _patch_download_dir(tmp_path):
         _, buttons = filemanager._render_root()
-        all_data = [b.data.decode() for row in buttons for b in row]
+        all_data = [button_data(b) for row in buttons for b in row]
         assert any(d.startswith("f:r:1:") and d[-1] in "SND" for d in all_data)
 
 
@@ -648,7 +645,7 @@ def test_render_dir_has_sort_buttons(tmp_path):
     _make_tree(tmp_path, {"D": {"a.txt": 10}})
     with _patch_download_dir(tmp_path):
         _, buttons = filemanager._render_dir("D", 1)
-        all_data = [b.data.decode() for row in buttons for b in row]
+        all_data = [button_data(b) for row in buttons for b in row]
         assert any(":1:N" in d for d in all_data)
         assert any(":1:D" in d for d in all_data)
 
@@ -660,7 +657,8 @@ def test_sort_threads_through_nav_buttons(tmp_path):
     _make_tree(tmp_path, {"Movies": {"a.mkv": 100}})
     with _patch_download_dir(tmp_path):
         _, buttons = filemanager._render_root(sort="N")
-        nav_data = [b.data.decode() for row in buttons for b in row if b"f:n:" in b.data or b"f:i:" in b.data]
+        all_data = [button_data(b) for row in buttons for b in row]
+        nav_data = [d for d in all_data if "f:n:" in d or "f:i:" in d]
         assert all(d.endswith(":N") for d in nav_data)
 
 
@@ -668,7 +666,8 @@ def test_sort_threads_through_delete_buttons(tmp_path):
     _make_tree(tmp_path, {"D": {"a.txt": 10}})
     with _patch_download_dir(tmp_path):
         _, buttons = filemanager._render_dir("D", 1, sort="D")
-        del_data = [b.data.decode() for row in buttons for b in row if b"f:d:" in b.data]
+        all_data = [button_data(b) for row in buttons for b in row]
+        del_data = [d for d in all_data if "f:d:" in d]
         assert all(d.endswith(":D") for d in del_data)
 
 

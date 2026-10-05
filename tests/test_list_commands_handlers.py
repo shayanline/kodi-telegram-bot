@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
+from conftest import button_data
+
 import config
 import downloader.list_commands as lc
 import throttle
@@ -348,7 +350,7 @@ def test_build_unified_list_nav_has_cancel_all(monkeypatch):
     try:
         _, buttons = build_unified_list()
         nav_row = buttons[-1]
-        nav_data = [getattr(b, "data", b"").decode() if hasattr(b, "data") else str(b) for b in nav_row]
+        nav_data = [button_data(b) for b in nav_row]
         assert any("dl_cancelall" in d for d in nav_data)
     finally:
         _cleanup()
@@ -462,7 +464,7 @@ def test_queued_buttons_data_contains_file_id():
     """Button callback data contains the correct file_id."""
     qi = QueuedItem("q.mp4", object(), 10, "/tmp/q.mp4", FakeEvent(), file_id="abc123")
     btns = lc._queued_buttons("q.mp4", qi, 1)
-    data_values = [b.data.decode() for b in btns]
+    data_values = [button_data(b) for b in btns]
     assert any("abc123" in d for d in data_values)
 
 
@@ -500,7 +502,7 @@ def test_cancel_all_button_in_nav_row(monkeypatch):
     try:
         _, buttons = build_unified_list()
         nav_row = buttons[-1]
-        assert any(getattr(b, "data", b"") == b"dl_cancelall" for b in nav_row)
+        assert any(button_data(b) == "dl_cancelall" for b in nav_row)
     finally:
         _cleanup()
 
